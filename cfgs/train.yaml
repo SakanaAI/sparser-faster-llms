@@ -1,0 +1,30 @@
+defaults:
+  - _self_
+  - model_cfg@_global_: transformer_pp_llama
+  - data_cfg@_global_: fineweb
+  - trainer_cfg@_global_: logging_trainer
+  - run_cfg@_global_: sparsity_gated_0p5b
+
+save_strategy: "no"
+save_steps: 10000
+push_to_hub: false
+tags:
+
+eval_strategy: "no"
+eval_steps: null
+
+logging_strategy: steps
+logging_steps: 1
+report_to: "wandb"
+
+results_dir: results
+exp_name: ${now:%Y.%m.%d}${now:%H%M%S}
+output_dir: ${results_dir}/${data_log_name}/${wandb_run_name}/${exp_name}
+
+call_post_training: null
+resume_from:
+seed: 42
+
+hydra:
+  run:
+    dir: ${output_dir}

@@ -1,0 +1,31 @@
+defaults:
+  - base
+  - _self_ 
+
+data_log_name: fineweb
+dataset_id_or_path: HuggingFaceFW/fineweb
+dataset_configuration: sample-350BT
+validation_split_percentage: null
+
+trust_remote_code: true
+streaming: true
+load_dataset_kwargs: null
+data_skip_samples: null
+manually_add_eos: true
+mask_past_sequences: false
+
+data_preprocessing_num_workers: 52
+make_dataset_fn:
+  _target_: custom_data.pretraining_data.load_pretraining_dataset
+  dataset_config_name: ${dataset_configuration}
+  max_seq_length: ${max_seq_length}
+  manually_add_eos: ${manually_add_eos}
+  validation_split_percentage: ${validation_split_percentage}
+  streaming: ${streaming}
+  do_train: ${do_train}
+  do_eval: ${do_eval} 
+  load_dataset_kwargs: ${load_dataset_kwargs}
+  skip_samples: ${data_skip_samples}
+  preprocessing_num_workers: ${data_preprocessing_num_workers}
+  attention_implementation: ${model_args.attn_implementation}
+  mask_past_sequences: ${mask_past_sequences}

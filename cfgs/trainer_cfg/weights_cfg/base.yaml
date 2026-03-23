@@ -1,0 +1,10 @@
+custom_class: null
+
+from_pretrained: false
+
+loaded_model:
+  _target_: hydra_utils.load_model
+  model_args: ${model_args}
+  config: ${model_custom_config}
+  custom_class: ${custom_class}
+  from_pretrained: ${from_pretrained}

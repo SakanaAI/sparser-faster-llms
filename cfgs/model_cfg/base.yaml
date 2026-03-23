@@ -1,0 +1,32 @@
+model_log_name:
+model_name_or_path:
+tokenizer_name_or_path: ${model_name_or_path}
+
+model_args:
+  _target_: hydra_utils.trl.ModelConfig
+  model_name_or_path: ${model_name_or_path}
+  trust_remote_code: true
+  use_peft: ${use_peft}
+  load_in_4bit: ${load_in_4bit}
+
+use_peft: false
+load_in_4bit: false
+model_custom_config: null
+
+tokenizer:
+  _target_: hydra_utils.transformers.AutoTokenizer.from_pretrained
+  pretrained_model_name_or_path: ${tokenizer_name_or_path}
+  trust_remote_code: true
+  
+force_override_pad_token: false
+make_tokenizer_fn:
+  _target_: hydra_utils.fix_pad_token
+  tokenizer: ${tokenizer}
+  model_name: ${model_name_or_path}
+  force_override_pad_token: ${force_override_pad_token}
+
+generate_compatible_tokenizer: false
+
+peft_config:
+    _target_: hydra_utils.trl.get_peft_config
+    model_args: ${model_args}

@@ -1,0 +1,7 @@
+defaults:
+  - base_trainer
+  - _self_ 
+
+trainer:
+  _target_: trainers.TrainerWithModelMetrics
+  

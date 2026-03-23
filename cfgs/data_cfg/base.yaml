@@ -1,0 +1,12 @@
+data_log_name:
+dataset_id_or_path:
+# indicates the dataset kind for processing
+dataset_local_directory: ${dataset_id_or_path}
+dataset_configuration: null
+
+make_dataset_fn:
+  dataset_id_or_path: ${dataset_id_or_path}
+  dataset_local_directory: ${dataset_local_directory}
+  # configuration is provided with the name argument to load_datasets
+  # see https://huggingface.co/docs/datasets/v1.11.0/loading_datasets.html
+  name: ${dataset_configuration} 
