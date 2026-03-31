@@ -4,9 +4,9 @@
 <b>Sparser, Faster, Lighter Transformer Language Models</b><br>
 </h1>
 <p align="center">
-  📚 <a href="https://arxiv.org/abs/coming-soon">[Paper]</a> |
+  📚 <a href="https://arxiv.org/abs/2603.23198">[Paper]</a> |
   🤗 <a href="https://huggingface.co/collections/SakanaAI/sparser-faster-lighter-transformers">[Checkpoints]</a>
-  <!-- 🐠 <a href="https://sakana.ai/blog/rlt">[Blog (coming soon)]</a> -->
+  <!-- 🐠 <a href="https://sakana.ai/blog">[Blog (coming soon)]</a> -->
 </p>
 
 This repository contains the reference code for the paper **Sparser, Faster, Lighter Transformer Language Models**. It includes sparse training code and our custom CUDA kernels designed for H100 GPUs for sparse models, leveraging the TwELL packing format.
@@ -117,6 +117,10 @@ report_to: null
 If you find our work or this repository useful and want to cite our paper, you can use the following:
 
 ```bibtex
-@article{sakana2026sparser,
+@article{sakanaXnvidia2026sparser,
+  title={Sparser, Faster, Lighter Transformer Language Models},
+  author={Cetin, Edoardo and Peluchetti, Stefano and Castillo, Emilio and Naruse, Akira and Murakami, Mana and Jones, Llion},
+  journal={arXiv preprint arXiv:2603.23198},
+  year={2026}
 }
 ```
