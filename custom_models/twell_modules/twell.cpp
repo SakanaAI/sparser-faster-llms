@@ -4,6 +4,7 @@
 #include <vector>
 
 #include <torch/extension.h>
+#include <cuda_runtime.h>
 
 #if defined(__GNUC__)
 #define TWELL_WEAK __attribute__((weak))
@@ -18,7 +19,8 @@ void mm_wgmma_nt_128x256x64TS8(
     uint32_t* C_packed_d,
     const int M,
     const int K,
-    const int N
+    const int N,
+    cudaStream_t stream = 0
 ) TWELL_WEAK;
 
 void create_d2t_layer_128x256x64TS8(
@@ -31,7 +33,8 @@ void create_d2t_layer_128x256x64TS8(
 void run_d2t_layer_128x256x64TS8(
     const int layer_number,
     at::BFloat16* A_d,
-    uint32_t* C_packed_d
+    uint32_t* C_packed_d,
+    cudaStream_t stream = 0
 ) TWELL_WEAK;
 
 void ensure_d2t_layer_shape_128x256x64TS8(
