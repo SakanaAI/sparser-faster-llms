@@ -17,6 +17,8 @@ def convert_sparse_mlp_to_twell_fused(
     inplace: bool = False,
     highest_precision: bool = False,
     preallocate_shared_hidden_state: bool = False,
+    compression_factor: int = 8,
+    flex_kernels: bool = False,
 ):
     if gate_linear is not None:
         return TwELLGatedMLP(
@@ -27,6 +29,8 @@ def convert_sparse_mlp_to_twell_fused(
             inplace=inplace,
             preallocate_shared_hidden_state=preallocate_shared_hidden_state,
             highest_precision=highest_precision,
+            compression_factor=compression_factor,
+            flex_kernels=flex_kernels,
         )
     return TwELLMLP(
         layer_number=layer_idx,
@@ -35,7 +39,40 @@ def convert_sparse_mlp_to_twell_fused(
         num_splits=num_splits,
         inplace=inplace,
         preallocate_shared_hidden_state=preallocate_shared_hidden_state,
+        compression_factor=compression_factor,
     )
+
+
+def get_sparse_mlp_to_twell_fused_conversion_fn(
+    num_splits: int = 2,
+    inplace: bool = False,
+    highest_precision: bool = False,
+    preallocate_shared_hidden_state: bool = False,
+    compression_factor: int = 8,
+    flex_kernels: bool = False,
+):
+    def conversion_fn(
+        up_linear,
+        down_linear,
+        layer_idx,
+        config,
+        gate_linear=None,
+    ):
+        return convert_sparse_mlp_to_twell_fused(
+            up_linear=up_linear,
+            down_linear=down_linear,
+            layer_idx=layer_idx,
+            config=config,
+            gate_linear=gate_linear,
+            num_splits=num_splits,
+            inplace=inplace,
+            highest_precision=highest_precision,
+            preallocate_shared_hidden_state=preallocate_shared_hidden_state,
+            compression_factor=compression_factor,
+            flex_kernels=flex_kernels,
+        )
+
+    return conversion_fn
 
 
 def _convert_sparse_state_dict(

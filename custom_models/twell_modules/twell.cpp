@@ -21,7 +21,39 @@ void mm_wgmma_nt_128x256x64TS8(
     const int N
 ) TWELL_WEAK;
 
+void mm_wgmma_nt_128x256x64TS4(
+    at::BFloat16* A_d,
+    at::BFloat16* B_d,
+    uint32_t* C_packed_d,
+    const int M,
+    const int K,
+    const int N
+) TWELL_WEAK;
+
+void mm_wgmma_nt_128x256x64TS2(
+    at::BFloat16* A_d,
+    at::BFloat16* B_d,
+    uint32_t* C_packed_d,
+    const int M,
+    const int K,
+    const int N
+) TWELL_WEAK;
+
 void create_d2t_layer_128x256x64TS8(
+    const int layer_number,
+    at::BFloat16* B_d,
+    const int K,
+    const int N
+) TWELL_WEAK;
+
+void create_d2t_layer_128x256x64TS4(
+    const int layer_number,
+    at::BFloat16* B_d,
+    const int K,
+    const int N
+) TWELL_WEAK;
+
+void create_d2t_layer_128x256x64TS2(
     const int layer_number,
     at::BFloat16* B_d,
     const int K,
@@ -34,7 +66,29 @@ void run_d2t_layer_128x256x64TS8(
     uint32_t* C_packed_d
 ) TWELL_WEAK;
 
+void run_d2t_layer_128x256x64TS4(
+    const int layer_number,
+    at::BFloat16* A_d,
+    uint32_t* C_packed_d
+) TWELL_WEAK;
+
+void run_d2t_layer_128x256x64TS2(
+    const int layer_number,
+    at::BFloat16* A_d,
+    uint32_t* C_packed_d
+) TWELL_WEAK;
+
 void ensure_d2t_layer_shape_128x256x64TS8(
+    const int layer_number,
+    const int M
+) TWELL_WEAK;
+
+void ensure_d2t_layer_shape_128x256x64TS4(
+    const int layer_number,
+    const int M
+) TWELL_WEAK;
+
+void ensure_d2t_layer_shape_128x256x64TS2(
     const int layer_number,
     const int M
 ) TWELL_WEAK;
@@ -67,6 +121,18 @@ void mm_t2d_wid(
     const int OUT_DIM
 ) TWELL_WEAK;
 
+void mm_t2d_wid_flex(
+    at::BFloat16* in_dense,
+    uint32_t* gate_out_twell_packed,
+    at::BFloat16* up_weight,
+    at::BFloat16* down_weight,
+    at::BFloat16* out,
+    const int IN_DIM,
+    const int FEATURE_DIM,
+    const int OUT_DIM,
+    const int T_n_compressed
+) TWELL_WEAK;
+
 void mm_t2d_wid_inplace(
     at::BFloat16* in_dense,
     uint32_t* gate_out_twell_packed,
@@ -75,6 +141,17 @@ void mm_t2d_wid_inplace(
     const int IN_DIM,
     const int FEATURE_DIM,
     const int OUT_DIM
+) TWELL_WEAK;
+
+void mm_t2d_wid_inplace_flex(
+    at::BFloat16* in_dense,
+    uint32_t* gate_out_twell_packed,
+    at::BFloat16* up_weight,
+    at::BFloat16* down_weight,
+    const int IN_DIM,
+    const int FEATURE_DIM,
+    const int OUT_DIM,
+    const int T_n_compressed
 ) TWELL_WEAK;
 
 void mm_t2d_wid_high_precision(
@@ -88,6 +165,18 @@ void mm_t2d_wid_high_precision(
     const int OUT_DIM
 ) TWELL_WEAK;
 
+void mm_t2d_wid_high_precision_flex(
+    at::BFloat16* in_dense,
+    uint32_t* gate_out_twell_packed,
+    at::BFloat16* up_weight,
+    at::BFloat16* down_weight,
+    at::BFloat16* out,
+    const int IN_DIM,
+    const int FEATURE_DIM,
+    const int OUT_DIM,
+    const int T_n_compressed
+) TWELL_WEAK;
+
 void mm_t2d_wid_high_precision_inplace(
     at::BFloat16* in_dense,
     uint32_t* gate_out_twell_packed,
@@ -96,6 +185,17 @@ void mm_t2d_wid_high_precision_inplace(
     const int IN_DIM,
     const int FEATURE_DIM,
     const int OUT_DIM
+) TWELL_WEAK;
+
+void mm_t2d_wid_high_precision_inplace_flex(
+    at::BFloat16* in_dense,
+    uint32_t* gate_out_twell_packed,
+    at::BFloat16* up_weight,
+    at::BFloat16* down_weight,
+    const int IN_DIM,
+    const int FEATURE_DIM,
+    const int OUT_DIM,
+    const int T_n_compressed
 ) TWELL_WEAK;
 }
 
@@ -179,6 +279,8 @@ using DestroyAllD2TLayersFn = void (*)();
 using T2DKernelFn = void (*)(uint32_t*, at::BFloat16*, at::BFloat16*, int, int, int, int);
 using GatedT2DKernelFn = void (*)(at::BFloat16*, uint32_t*, at::BFloat16*, at::BFloat16*, at::BFloat16*, int, int, int);
 using GatedT2DInplaceKernelFn = void (*)(at::BFloat16*, uint32_t*, at::BFloat16*, at::BFloat16*, int, int, int);
+using GatedT2DFlexKernelFn = void (*)(at::BFloat16*, uint32_t*, at::BFloat16*, at::BFloat16*, at::BFloat16*, int, int, int, int);
+using GatedT2DInplaceFlexKernelFn = void (*)(at::BFloat16*, uint32_t*, at::BFloat16*, at::BFloat16*, int, int, int, int);
 using RunMLPLayerFn = void (*)(int, at::BFloat16*, at::BFloat16*, uint32_t*, at::BFloat16*, int, int, int, int);
 using RunGatedMLPLayerFn = void (*)(int, at::BFloat16*, at::BFloat16*, at::BFloat16*, uint32_t*, at::BFloat16*, int, int, int);
 using RunMLPLayerInplaceFn = void (*)(int, at::BFloat16*, at::BFloat16*, uint32_t*, int, int, int, int);
@@ -187,6 +289,7 @@ using RunGatedMLPLayerInplaceFn = void (*)(int, at::BFloat16*, at::BFloat16*, at
 struct D2TLayerMeta {
     int N;
     int K;
+    int compression_factor;
 };
 
 static std::unordered_map<int, D2TLayerMeta> D2T_LAYER_META;
@@ -196,24 +299,56 @@ static inline std::vector<std::string> sparse_algorithms() {
     return {"twell_d2t"};
 }
 
-// returns the packed sparse kernel for the requested algorithm.
-static inline SparseKernelPackedFn get_sparse_kernel_packed(const std::string& algorithm) {
+// returns the packed sparse kernel.
+static inline SparseKernelPackedFn get_sparse_kernel_packed(const std::string& algorithm, int compression_factor) {
     (void)algorithm;
+    switch (compression_factor) {
+        case 8:
+            return TWELL_D2T::mm_wgmma_nt_128x256x64TS8;
+        case 4:
+            return TWELL_D2T::mm_wgmma_nt_128x256x64TS4;
+        case 2:
+            return TWELL_D2T::mm_wgmma_nt_128x256x64TS2;
+    }
     return TWELL_D2T::mm_wgmma_nt_128x256x64TS8;
 }
 
 // returns the cached D2T layer creation entrypoint.
-static inline CreateD2TLayerFn get_create_d2t_layer_fn() {
+static inline CreateD2TLayerFn get_create_d2t_layer_fn(int compression_factor) {
+    switch (compression_factor) {
+        case 8:
+            return TWELL_D2T::create_d2t_layer_128x256x64TS8;
+        case 4:
+            return TWELL_D2T::create_d2t_layer_128x256x64TS4;
+        case 2:
+            return TWELL_D2T::create_d2t_layer_128x256x64TS2;
+    }
     return TWELL_D2T::create_d2t_layer_128x256x64TS8;
 }
 
 // returns the cached D2T layer execution entrypoint.
-static inline RunD2TLayerFn get_run_d2t_layer_fn() {
+static inline RunD2TLayerFn get_run_d2t_layer_fn(int compression_factor) {
+    switch (compression_factor) {
+        case 8:
+            return TWELL_D2T::run_d2t_layer_128x256x64TS8;
+        case 4:
+            return TWELL_D2T::run_d2t_layer_128x256x64TS4;
+        case 2:
+            return TWELL_D2T::run_d2t_layer_128x256x64TS2;
+    }
     return TWELL_D2T::run_d2t_layer_128x256x64TS8;
 }
 
 // returns the cached D2T shape-update entrypoint.
-static inline EnsureD2TLayerShapeFn get_ensure_d2t_layer_shape_fn() {
+static inline EnsureD2TLayerShapeFn get_ensure_d2t_layer_shape_fn(int compression_factor) {
+    switch (compression_factor) {
+        case 8:
+            return TWELL_D2T::ensure_d2t_layer_shape_128x256x64TS8;
+        case 4:
+            return TWELL_D2T::ensure_d2t_layer_shape_128x256x64TS4;
+        case 2:
+            return TWELL_D2T::ensure_d2t_layer_shape_128x256x64TS2;
+    }
     return TWELL_D2T::ensure_d2t_layer_shape_128x256x64TS8;
 }
 
@@ -240,6 +375,16 @@ static inline GatedT2DKernelFn get_gated_t2d_kernel_fn(bool highest_precision) {
 // returns the in-place gated packed-to-dense kernel for the requested precision mode.
 static inline GatedT2DInplaceKernelFn get_gated_t2d_inplace_kernel_fn(bool highest_precision) {
     return highest_precision ? TWELL_GATED_T2D::mm_t2d_wid_high_precision_inplace : TWELL_GATED_T2D::mm_t2d_wid_inplace;
+}
+
+// returns the flex gated packed-to-dense kernel for the requested precision mode.
+static inline GatedT2DFlexKernelFn get_gated_t2d_flex_kernel_fn(bool highest_precision) {
+    return highest_precision ? TWELL_GATED_T2D::mm_t2d_wid_high_precision_flex : TWELL_GATED_T2D::mm_t2d_wid_flex;
+}
+
+// returns the in-place flex gated packed-to-dense kernel for the requested precision mode.
+static inline GatedT2DInplaceFlexKernelFn get_gated_t2d_inplace_flex_kernel_fn(bool highest_precision) {
+    return highest_precision ? TWELL_GATED_T2D::mm_t2d_wid_high_precision_inplace_flex : TWELL_GATED_T2D::mm_t2d_wid_inplace_flex;
 }
 
 // returns the fused non-gated MLP kernel.
@@ -272,13 +417,14 @@ void matmul_sparse_out(
     torch::Tensor A,
     torch::Tensor B,
     torch::Tensor C_packed,
-    const std::string& algorithm = "twell_d2t"
+    const std::string& algorithm = "twell_d2t",
+    int compression_factor = 8
 ) {
     const int M = static_cast<int>(A.size(0));
     const int K = static_cast<int>(A.size(1));
     const int N = static_cast<int>(B.size(0));
 
-    auto* kernel = get_sparse_kernel_packed(algorithm);
+    auto* kernel = get_sparse_kernel_packed(algorithm, compression_factor);
     kernel(
         A.data_ptr<at::BFloat16>(),
         B.data_ptr<at::BFloat16>(),
@@ -294,12 +440,13 @@ void matmul_sparse_out(
 torch::Tensor matmul_sparse(
     torch::Tensor A,
     torch::Tensor B,
-    const std::string& algorithm = "twell_d2t"
+    const std::string& algorithm = "twell_d2t",
+    int compression_factor = 8
 ) {
     const int M = static_cast<int>(A.size(0));
     const int N = static_cast<int>(B.size(0));
-    auto C_packed = torch::zeros({M, N / 8}, A.options().dtype(torch::kUInt32));
-    matmul_sparse_out(A, B, C_packed, algorithm);
+    auto C_packed = torch::zeros({M, N / compression_factor}, A.options().dtype(torch::kUInt32));
+    matmul_sparse_out(A, B, C_packed, algorithm, compression_factor);
     return C_packed;
 }
 
@@ -347,23 +494,40 @@ void matmul_gated_t2d_out(
     torch::Tensor UP,
     torch::Tensor DOWN,
     torch::Tensor OUT,
-    bool highest_precision = false
+    bool highest_precision = false,
+    int compression_factor = 8,
+    bool flex_kernels = false
 ) {
     const int M = static_cast<int>(IN_dense.size(0));
     const int OUT_DIM = static_cast<int>(IN_dense.size(1));
     const int FEATURE_DIM = static_cast<int>(UP.size(0));
 
-    auto* kernel = get_gated_t2d_kernel_fn(highest_precision);
-    kernel(
-        IN_dense.data_ptr<at::BFloat16>(),
-        GATE_packed.data_ptr<uint32_t>(),
-        UP.data_ptr<at::BFloat16>(),
-        DOWN.data_ptr<at::BFloat16>(),
-        OUT.data_ptr<at::BFloat16>(),
-        M,
-        FEATURE_DIM,
-        OUT_DIM
-    );
+    if (flex_kernels) {
+        auto* kernel = get_gated_t2d_flex_kernel_fn(highest_precision);
+        kernel(
+            IN_dense.data_ptr<at::BFloat16>(),
+            GATE_packed.data_ptr<uint32_t>(),
+            UP.data_ptr<at::BFloat16>(),
+            DOWN.data_ptr<at::BFloat16>(),
+            OUT.data_ptr<at::BFloat16>(),
+            M,
+            FEATURE_DIM,
+            OUT_DIM,
+            256 / compression_factor
+        );
+    } else {
+        auto* kernel = get_gated_t2d_kernel_fn(highest_precision);
+        kernel(
+            IN_dense.data_ptr<at::BFloat16>(),
+            GATE_packed.data_ptr<uint32_t>(),
+            UP.data_ptr<at::BFloat16>(),
+            DOWN.data_ptr<at::BFloat16>(),
+            OUT.data_ptr<at::BFloat16>(),
+            M,
+            FEATURE_DIM,
+            OUT_DIM
+        );
+    }
 }
 
 // runs gated packed-to-dense projection and returns a newly allocated dense output tensor.
@@ -373,10 +537,21 @@ torch::Tensor matmul_gated_t2d(
     torch::Tensor GATE_packed,
     torch::Tensor UP,
     torch::Tensor DOWN,
-    bool highest_precision = false
+    bool highest_precision = false,
+    int compression_factor = 8,
+    bool flex_kernels = false
 ) {
     auto OUT = torch::zeros({IN_dense.size(0), IN_dense.size(1)}, IN_dense.options());
-    matmul_gated_t2d_out(IN_dense, GATE_packed, UP, DOWN, OUT, highest_precision);
+    matmul_gated_t2d_out(
+        IN_dense,
+        GATE_packed,
+        UP,
+        DOWN,
+        OUT,
+        highest_precision,
+        compression_factor,
+        flex_kernels
+    );
     return OUT;
 }
 
@@ -384,14 +559,15 @@ torch::Tensor matmul_gated_t2d(
 // inputs: layer id, B weight tensor. output: layer cache initialized.
 void create_d2t_layer(
     int layer_number,
-    torch::Tensor B
+    torch::Tensor B,
+    int compression_factor = 8
 ) {
     const int K = static_cast<int>(B.size(1));
     const int N = static_cast<int>(B.size(0));
 
-    auto* fn = get_create_d2t_layer_fn();
+    auto* fn = get_create_d2t_layer_fn(compression_factor);
     fn(layer_number, B.data_ptr<at::BFloat16>(), K, N);
-    D2T_LAYER_META[layer_number] = D2TLayerMeta{N, K};
+    D2T_LAYER_META[layer_number] = D2TLayerMeta{N, K, compression_factor};
 }
 
 // runs one cached D2T layer into a caller-provided packed output tensor.
@@ -404,12 +580,13 @@ void run_d2t_layer(
     auto meta_it = D2T_LAYER_META.find(layer_number);
     const int N = meta_it->second.N;
     const int K = meta_it->second.K;
+    const int compression_factor = meta_it->second.compression_factor;
     const int M = static_cast<int>(A.size(0));
 
-    auto* ensure_fn = get_ensure_d2t_layer_shape_fn();
+    auto* ensure_fn = get_ensure_d2t_layer_shape_fn(compression_factor);
     ensure_fn(layer_number, M);
 
-    auto* fn = get_run_d2t_layer_fn();
+    auto* fn = get_run_d2t_layer_fn(compression_factor);
     fn(layer_number, A.data_ptr<at::BFloat16>(), C_packed.data_ptr<uint32_t>());
     (void)K;
     (void)N;
@@ -420,7 +597,8 @@ void ensure_d2t_layer_shape(
     int layer_number,
     int M
 ) {
-    auto* fn = get_ensure_d2t_layer_shape_fn();
+    auto meta_it = D2T_LAYER_META.find(layer_number);
+    auto* fn = get_ensure_d2t_layer_shape_fn(meta_it->second.compression_factor);
     fn(layer_number, M);
 }
 
@@ -468,7 +646,7 @@ torch::Tensor run_mlp_layer(
     const int FEATURE_DIM = meta_it->second.N;
     const int M = static_cast<int>(A.size(0));
 
-    auto* ensure_fn = get_ensure_d2t_layer_shape_fn();
+    auto* ensure_fn = get_ensure_d2t_layer_shape_fn(meta_it->second.compression_factor);
     ensure_fn(layer_number, M);
 
     auto C_packed = torch::empty({M, FEATURE_DIM / 8}, A.options().dtype(torch::kUInt32));
@@ -515,7 +693,7 @@ void run_mlp_layer_inplace(
     const int FEATURE_DIM = meta_it->second.N;
     const int M = static_cast<int>(A.size(0));
 
-    auto* ensure_fn = get_ensure_d2t_layer_shape_fn();
+    auto* ensure_fn = get_ensure_d2t_layer_shape_fn(meta_it->second.compression_factor);
     ensure_fn(layer_number, M);
 
     auto C_packed = torch::empty({M, FEATURE_DIM / 8}, A.options().dtype(torch::kUInt32));
@@ -530,7 +708,9 @@ static torch::Tensor run_gated_mlp_layer_with_hidden_states(
     torch::Tensor UP,
     torch::Tensor DOWN,
     torch::Tensor C_packed,
-    bool highest_precision
+    bool highest_precision,
+    int compression_factor = 8,
+    bool flex_kernels = false
 ) {
     auto meta_it = D2T_LAYER_META.find(layer_number);
 
@@ -540,18 +720,34 @@ static torch::Tensor run_gated_mlp_layer_with_hidden_states(
 
     auto OUT = torch::empty({M, OUT_DIM}, A.options());
 
-    auto* fn = get_run_gated_mlp_layer_fn(highest_precision);
-    fn(
-        layer_number,
-        A.data_ptr<at::BFloat16>(),
-        UP.data_ptr<at::BFloat16>(),
-        DOWN.data_ptr<at::BFloat16>(),
-        C_packed.data_ptr<uint32_t>(),
-        OUT.data_ptr<at::BFloat16>(),
-        M,
-        FEATURE_DIM,
-        OUT_DIM
-    );
+    if (flex_kernels) {
+        run_d2t_layer(layer_number, A, C_packed);
+        auto* fn = get_gated_t2d_flex_kernel_fn(highest_precision);
+        fn(
+            A.data_ptr<at::BFloat16>(),
+            C_packed.data_ptr<uint32_t>(),
+            UP.data_ptr<at::BFloat16>(),
+            DOWN.data_ptr<at::BFloat16>(),
+            OUT.data_ptr<at::BFloat16>(),
+            M,
+            FEATURE_DIM,
+            OUT_DIM,
+            256 / compression_factor
+        );
+    } else {
+        auto* fn = get_run_gated_mlp_layer_fn(highest_precision);
+        fn(
+            layer_number,
+            A.data_ptr<at::BFloat16>(),
+            UP.data_ptr<at::BFloat16>(),
+            DOWN.data_ptr<at::BFloat16>(),
+            C_packed.data_ptr<uint32_t>(),
+            OUT.data_ptr<at::BFloat16>(),
+            M,
+            FEATURE_DIM,
+            OUT_DIM
+        );
+    }
     return OUT;
 }
 
@@ -562,18 +758,20 @@ torch::Tensor run_gated_mlp_layer(
     torch::Tensor A,
     torch::Tensor UP,
     torch::Tensor DOWN,
-    bool highest_precision = false
+    bool highest_precision = false,
+    int compression_factor = 8,
+    bool flex_kernels = false
 ) {
     auto meta_it = D2T_LAYER_META.find(layer_number);
     const int FEATURE_DIM = meta_it->second.N;
     const int M = static_cast<int>(A.size(0));
 
-    auto* ensure_fn = get_ensure_d2t_layer_shape_fn();
+    auto* ensure_fn = get_ensure_d2t_layer_shape_fn(meta_it->second.compression_factor);
     ensure_fn(layer_number, M);
 
-    auto C_packed = torch::empty({M, FEATURE_DIM / 8}, A.options().dtype(torch::kUInt32));
+    auto C_packed = torch::empty({M, FEATURE_DIM / compression_factor}, A.options().dtype(torch::kUInt32));
     return run_gated_mlp_layer_with_hidden_states(
-        layer_number, A, UP, DOWN, C_packed, highest_precision
+        layer_number, A, UP, DOWN, C_packed, highest_precision, compression_factor, flex_kernels
     );
 }
 
@@ -585,7 +783,9 @@ static void run_gated_mlp_layer_inplace_with_hidden_states(
     torch::Tensor UP,
     torch::Tensor DOWN,
     torch::Tensor C_packed,
-    bool highest_precision
+    bool highest_precision,
+    int compression_factor = 8,
+    bool flex_kernels = false
 ) {
     auto meta_it = D2T_LAYER_META.find(layer_number);
 
@@ -593,17 +793,32 @@ static void run_gated_mlp_layer_inplace_with_hidden_states(
     const int OUT_DIM = meta_it->second.K;
     const int M = static_cast<int>(A.size(0));
 
-    auto* fn = get_run_gated_mlp_layer_inplace_fn(highest_precision);
-    fn(
-        layer_number,
-        A.data_ptr<at::BFloat16>(),
-        UP.data_ptr<at::BFloat16>(),
-        DOWN.data_ptr<at::BFloat16>(),
-        C_packed.data_ptr<uint32_t>(),
-        M,
-        FEATURE_DIM,
-        OUT_DIM
-    );
+    if (flex_kernels) {
+        run_d2t_layer(layer_number, A, C_packed);
+        auto* fn = get_gated_t2d_inplace_flex_kernel_fn(highest_precision);
+        fn(
+            A.data_ptr<at::BFloat16>(),
+            C_packed.data_ptr<uint32_t>(),
+            UP.data_ptr<at::BFloat16>(),
+            DOWN.data_ptr<at::BFloat16>(),
+            M,
+            FEATURE_DIM,
+            OUT_DIM,
+            256 / compression_factor
+        );
+    } else {
+        auto* fn = get_run_gated_mlp_layer_inplace_fn(highest_precision);
+        fn(
+            layer_number,
+            A.data_ptr<at::BFloat16>(),
+            UP.data_ptr<at::BFloat16>(),
+            DOWN.data_ptr<at::BFloat16>(),
+            C_packed.data_ptr<uint32_t>(),
+            M,
+            FEATURE_DIM,
+            OUT_DIM
+        );
+    }
 }
 
 // runs the fused gated MLP in place and allocates packed hidden states internally.
@@ -613,18 +828,20 @@ void run_gated_mlp_layer_inplace(
     torch::Tensor A,
     torch::Tensor UP,
     torch::Tensor DOWN,
-    bool highest_precision = false
+    bool highest_precision = false,
+    int compression_factor = 8,
+    bool flex_kernels = false
 ) {
     auto meta_it = D2T_LAYER_META.find(layer_number);
     const int FEATURE_DIM = meta_it->second.N;
     const int M = static_cast<int>(A.size(0));
 
-    auto* ensure_fn = get_ensure_d2t_layer_shape_fn();
+    auto* ensure_fn = get_ensure_d2t_layer_shape_fn(meta_it->second.compression_factor);
     ensure_fn(layer_number, M);
 
-    auto C_packed = torch::empty({M, FEATURE_DIM / 8}, A.options().dtype(torch::kUInt32));
+    auto C_packed = torch::empty({M, FEATURE_DIM / compression_factor}, A.options().dtype(torch::kUInt32));
     run_gated_mlp_layer_inplace_with_hidden_states(
-        layer_number, A, UP, DOWN, C_packed, highest_precision
+        layer_number, A, UP, DOWN, C_packed, highest_precision, compression_factor, flex_kernels
     );
 }
 

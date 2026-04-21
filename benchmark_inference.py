@@ -48,6 +48,7 @@ def parse_args():
     parser.add_argument("--reps", type=int, default=50)
     parser.add_argument("--warmup-reps", type=int, default=5)
     parser.add_argument("--measure-energy", action="store_true", default=False)
+    parser.add_argument("--flex-kernels", action="store_true", default=False)
     return parser.parse_args()
 
 
@@ -238,6 +239,7 @@ def load_twell_model(
     state_dict_file: Path,
     dtype: torch.dtype,
     device: torch.device,
+    flex_kernels: bool = False,
 ):
     print("[twell] Loading model and converting sparse checkpoint to TwELL format", flush=True)
     model = SparseLlamaForCausalLM(copy.deepcopy(sparse_config))
@@ -250,7 +252,15 @@ def load_twell_model(
     raise_on_incompatible_keys("twell", incompatible)
     del state
     gc.collect()
-    model.replace_mlp_modules(convert_sparse_mlp_to_twell_fused)
+    conversion_fn = (
+        convert_sparse_mlp_to_twell_fused
+        if not flex_kernels
+        else lambda **kwargs: convert_sparse_mlp_to_twell_fused(
+            **kwargs,
+            flex_kernels=True,
+        )
+    )
+    model.replace_mlp_modules(conversion_fn)
     model = finalize_model(model, device=device, dtype=dtype)
     return model
 
@@ -494,7 +504,7 @@ def main():
     )
 
     implementations = [
-        ("twell", load_twell_model),
+        ("twell-flex" if args.flex_kernels else "twell", load_twell_model),
         ("torch", load_torch_model),
     ]
     rows = []
@@ -502,11 +512,15 @@ def main():
     for implementation_name, load_fn in implementations:
         print(f"[{implementation_name}] Preparing benchmark run", flush=True)
         free_cuda_memory()
+        load_kwargs = (
+            {"flex_kernels": True} if implementation_name == "twell-flex" else {}
+        )
         model = load_fn(
             sparse_config=sparse_config,
             state_dict_file=state_dict_file,
             dtype=dtype,
             device=device,
+            **load_kwargs,
         )
         benchmark_stats = benchmark_model(
             model=model,

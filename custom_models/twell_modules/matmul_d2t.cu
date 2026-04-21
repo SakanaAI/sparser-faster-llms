@@ -923,7 +923,7 @@ void update_d2t_layer_runtime_maps(
             cache.M,
             cache.K
         );
-        create_transposed_tensor_map_uint32_3d<T_m, T_n_compressed, false, 32, 4>(
+        create_transposed_tensor_map_uint32_3d<T_m, T_n_compressed, false, T_n_compressed, 4>(
             &cache.C_packed_tm,
             C_packed_d,
             cache.M,
@@ -1089,6 +1089,36 @@ void create_d2t_layer_128x256x64TS8(
     );
 }
 
+// creates or refreshes the cached 128x256x64 TS4 D2T layer metadata.
+// inputs: layer id, B pointer, logical K/N. output: static layer cache prepared.
+void create_d2t_layer_128x256x64TS4(
+    const int layer_number,
+    at::BFloat16* B_d,
+    const int K, const int N
+) {
+    auto& layer_cache = CACHED_D2T_LAYERS[layer_number];
+    prepare_d2t_layer_static_cache<128, 256, 64, 2, 1, 3, 128, 64>(
+        layer_cache,
+        B_d,
+        K, N
+    );
+}
+
+// creates or refreshes the cached 128x256x64 TS2 D2T layer metadata.
+// inputs: layer id, B pointer, logical K/N. output: static layer cache prepared.
+void create_d2t_layer_128x256x64TS2(
+    const int layer_number,
+    at::BFloat16* B_d,
+    const int K, const int N
+) {
+    auto& layer_cache = CACHED_D2T_LAYERS[layer_number];
+    prepare_d2t_layer_static_cache<128, 256, 64, 2, 1, 3, 128, 128>(
+        layer_cache,
+        B_d,
+        K, N
+    );
+}
+
 // ensures the cached 128x256x64 TS8 layer shape matches the requested M.
 // inputs: layer id, logical M. output: shape-dependent schedule state prepared.
 void ensure_d2t_layer_shape_128x256x64TS8(
@@ -1101,6 +1131,40 @@ void ensure_d2t_layer_shape_128x256x64TS8(
         exit(-1);
     }
     ensure_d2t_layer_shape<128, 256, 64, 2, 1, 4, 128, 32>(
+        it->second,
+        M
+    );
+}
+
+// ensures the cached 128x256x64 TS4 layer shape matches the requested M.
+// inputs: layer id, logical M. output: shape-dependent schedule state prepared.
+void ensure_d2t_layer_shape_128x256x64TS4(
+    const int layer_number,
+    const int M
+) {
+    auto it = CACHED_D2T_LAYERS.find(layer_number);
+    if (it == CACHED_D2T_LAYERS.end()) {
+        printf("ensure_d2t_layer_shape called for non-existing layer %d\n", layer_number);
+        exit(-1);
+    }
+    ensure_d2t_layer_shape<128, 256, 64, 2, 1, 3, 128, 64>(
+        it->second,
+        M
+    );
+}
+
+// ensures the cached 128x256x64 TS2 layer shape matches the requested M.
+// inputs: layer id, logical M. output: shape-dependent schedule state prepared.
+void ensure_d2t_layer_shape_128x256x64TS2(
+    const int layer_number,
+    const int M
+) {
+    auto it = CACHED_D2T_LAYERS.find(layer_number);
+    if (it == CACHED_D2T_LAYERS.end()) {
+        printf("ensure_d2t_layer_shape called for non-existing layer %d\n", layer_number);
+        exit(-1);
+    }
+    ensure_d2t_layer_shape<128, 256, 64, 2, 1, 3, 128, 128>(
         it->second,
         M
     );
@@ -1127,6 +1191,51 @@ void run_d2t_layer_128x256x64TS8(
         it->second
     );
 }
+
+// runs the cached 128x256x64 TS4 D2T layer for one input/output pair.
+// inputs: layer id, A pointer, packed-C pointer. output: packed positive activations written.
+void run_d2t_layer_128x256x64TS4(
+    const int layer_number,
+    at::BFloat16* A_d,
+    uint32_t* C_packed_d
+) {
+    auto it = CACHED_D2T_LAYERS.find(layer_number);
+    if (it == CACHED_D2T_LAYERS.end()) {
+        printf("run_d2t_layer called for non-existing layer %d\n", layer_number);
+        exit(-1);
+    }
+    update_d2t_layer_runtime_maps<128, 256, 64, 2, 1, 3, 128, 64>(
+        it->second,
+        A_d,
+        C_packed_d
+    );
+    run_d2t_layer_cache<128, 256, 64, 2, 1, 3, 128, 64, true>(
+        it->second
+    );
+}
+
+// runs the cached 128x256x64 TS2 D2T layer for one input/output pair.
+// inputs: layer id, A pointer, packed-C pointer. output: packed positive activations written.
+void run_d2t_layer_128x256x64TS2(
+    const int layer_number,
+    at::BFloat16* A_d,
+    uint32_t* C_packed_d
+) {
+    auto it = CACHED_D2T_LAYERS.find(layer_number);
+    if (it == CACHED_D2T_LAYERS.end()) {
+        printf("run_d2t_layer called for non-existing layer %d\n", layer_number);
+        exit(-1);
+    }
+    update_d2t_layer_runtime_maps<128, 256, 64, 2, 1, 3, 128, 128>(
+        it->second,
+        A_d,
+        C_packed_d
+    );
+    run_d2t_layer_cache<128, 256, 64, 2, 1, 3, 128, 128, true>(
+        it->second
+    );
+}
+
 
 // destroys one cached D2T layer entry.
 // inputs: layer id. output: layer cache removed and shared schedule freed if now unused.
@@ -1165,6 +1274,52 @@ void mm_wgmma_nt_128x256x64TS8(
         M
     );
     run_d2t_layer_128x256x64TS8(
+        LEGACY_LAYER_ID,
+        A_d,
+        C_packed_d
+    );
+}
+
+// runs the 128x256x64 TS4 D2T path one-shot without explicit cache management.
+// inputs: A pointer, B pointer, packed-C pointer, logical M/K/N. output: packed positive activations written.
+void mm_wgmma_nt_128x256x64TS4(
+    at::BFloat16* A_d, at::BFloat16* B_d, uint32_t* C_packed_d,
+    const int M, const int K, const int N
+) {
+    constexpr int LEGACY_LAYER_ID = -1;
+    create_d2t_layer_128x256x64TS4(
+        LEGACY_LAYER_ID,
+        B_d,
+        K, N
+    );
+    ensure_d2t_layer_shape_128x256x64TS4(
+        LEGACY_LAYER_ID,
+        M
+    );
+    run_d2t_layer_128x256x64TS4(
+        LEGACY_LAYER_ID,
+        A_d,
+        C_packed_d
+    );
+}
+
+// runs the 128x256x64 TS2 D2T path one-shot without explicit cache management.
+// inputs: A pointer, B pointer, packed-C pointer, logical M/K/N. output: packed positive activations written.
+void mm_wgmma_nt_128x256x64TS2(
+    at::BFloat16* A_d, at::BFloat16* B_d, uint32_t* C_packed_d,
+    const int M, const int K, const int N
+) {
+    constexpr int LEGACY_LAYER_ID = -1;
+    create_d2t_layer_128x256x64TS2(
+        LEGACY_LAYER_ID,
+        B_d,
+        K, N
+    );
+    ensure_d2t_layer_shape_128x256x64TS2(
+        LEGACY_LAYER_ID,
+        M
+    );
+    run_d2t_layer_128x256x64TS2(
         LEGACY_LAYER_ID,
         A_d,
         C_packed_d

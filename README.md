@@ -6,7 +6,7 @@
 <p align="center">
   📚 <a href="https://arxiv.org/abs/2603.23198">[Paper]</a> |
   🤗 <a href="https://huggingface.co/collections/SakanaAI/sparser-faster-lighter-transformers">[Checkpoints]</a>
-  <!-- 🐠 <a href="https://sakana.ai/blog">[Blog (coming soon)]</a> -->
+  🐠 <a href="https://pub.sakana.ai/sparser-faster-llms">[Blog (coming soon)]</a>
 </p>
 
 This repository contains the reference code for the paper **Sparser, Faster, Lighter Transformer Language Models**. It includes sparse training code and our custom CUDA kernels designed for H100 GPUs for sparse models, leveraging the TwELL packing format.
@@ -62,7 +62,7 @@ We release pretrained sparse checkpoints on the Hugging Face Hub at:
 - `SakanaAI/SparseLM1.5B`
 - `SakanaAI/SparseLM2B`
 
-You can benchmark our kernels against the Hugging Face PyTorch reference with our benchmarking scripts `benchmark_inference.py`, e.g.: 
+You can benchmark our kernels against the Hugging Face PyTorch reference with our benchmarking scripts `benchmark_inference.py`, e.g.:
 
 ```bash
 python benchmark_inference.py \
@@ -70,6 +70,17 @@ python benchmark_inference.py \
   --reps 500 \
   --warmup-reps 5 \
   --out-csv results/benchmark_inference/SparseLM1.5B.csv
+```
+
+We provide two implementations of the TwELL kernels: the default `twell` implementation, and a `twell-flex` variant that is expected to be slightly faster in cases of non-uniform sparsity patterns (differences are still expected to be only less than 0.1% overall). You can enable the `twell-flex` variant with the `--flex-kernels` flag, e.g.:
+
+```bash
+python benchmark_inference.py \
+  --model-path SakanaAI/SparseLM1.5B \
+  --reps 500 \
+  --warmup-reps 5 \
+  --out-csv results/benchmark_inference/SparseLM1.5B-flex.csv
+  --flex-kernels
 ```
 
 To also measure GPU energy during the benchmark loop:
