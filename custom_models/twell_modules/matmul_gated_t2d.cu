@@ -55,14 +55,15 @@ __global__ __launch_bounds__(WARP_SIZE) void mm_t2d_kernel(
     for(int iter_idx = 0; iter_idx < NUM_LOAD_ITERS; iter_idx += 1)
     {
         *reinterpret_cast<uint4*>(&IN_cached[iter_idx][0]) =
-            *reinterpret_cast<const uint4*>(IN_d + iter_idx * STRIDE_8xWARP);
+            __ldcs(
+                reinterpret_cast<const uint4*>(IN_d + iter_idx * STRIDE_8xWARP));
     }
 
     #pragma unroll 1
     for(int tile_idx = 0; tile_idx < NUM_T_n; ++tile_idx)
     {
         // each thread gets one scalar from the packed tile, giving the warp one coalesced access
-        const int lane_tile_register = GATE_OUT_twell_packed_d[tile_idx * T_n_compressed];
+        const int lane_tile_register = __ldcs(&GATE_OUT_twell_packed_d[tile_idx * T_n_compressed]);
         const int num_nonzeros = __shfl_sync(0xFFFFFFFFu, lane_tile_register, 0);
         #pragma unroll 1
         for (int idx = 1; idx < num_nonzeros + 1; ++idx)
@@ -162,8 +163,8 @@ __global__ __launch_bounds__(WARP_SIZE) void mm_t2d_kernel(
         packed_bfloats_x8[3] = __floats2bfloat162_rn(
             OUT_accum[iter_idx][6], OUT_accum[iter_idx][7]);
 
-        *reinterpret_cast<uint4*>(OUT_d + iter_idx * STRIDE_8xWARP) =
-            *reinterpret_cast<uint4*>(packed_bfloats_x8);
+        __stcs(reinterpret_cast<uint4*>(OUT_d + iter_idx * STRIDE_8xWARP),
+               *reinterpret_cast<uint4*>(packed_bfloats_x8));
     }
 }
 
@@ -211,7 +212,8 @@ __global__ __launch_bounds__(WARP_SIZE) void mm_t2d_flex_kernel(
     for(int iter_idx = 0; iter_idx < NUM_LOAD_ITERS; iter_idx += 1)
     {
         *reinterpret_cast<uint4*>(&IN_cached[iter_idx][0]) =
-            *reinterpret_cast<const uint4*>(IN_d + iter_idx * STRIDE_8xWARP);
+            __ldcs(
+                reinterpret_cast<const uint4*>(IN_d + iter_idx * STRIDE_8xWARP));
     }
 
     #pragma unroll 1
@@ -316,8 +318,8 @@ __global__ __launch_bounds__(WARP_SIZE) void mm_t2d_flex_kernel(
         packed_bfloats_x8[3] = __floats2bfloat162_rn(
             OUT_accum[iter_idx][6], OUT_accum[iter_idx][7]);
 
-        *reinterpret_cast<uint4*>(OUT_d + iter_idx * STRIDE_8xWARP) =
-            *reinterpret_cast<uint4*>(packed_bfloats_x8);
+        __stcs(reinterpret_cast<uint4*>(OUT_d + iter_idx * STRIDE_8xWARP),
+               *reinterpret_cast<uint4*>(packed_bfloats_x8));
     }
 }
 
@@ -368,14 +370,15 @@ __global__ __launch_bounds__(WARP_SIZE) void mm_t2d_high_precision_kernel(
     for(int iter_idx = 0; iter_idx < NUM_LOAD_ITERS; iter_idx += 1)
     {
         *reinterpret_cast<uint4*>(&IN_cached[iter_idx][0]) =
-            *reinterpret_cast<const uint4*>(IN_d + iter_idx * STRIDE_8xWARP);
+            __ldcs(
+                reinterpret_cast<const uint4*>(IN_d + iter_idx * STRIDE_8xWARP));
     }
 
     #pragma unroll 1
     for(int tile_idx = 0; tile_idx < NUM_T_n; ++tile_idx)
     {
         // each thread gets one scalar from the packed tile, giving the warp one coalesced access
-        const int lane_tile_register = GATE_OUT_twell_packed_d[tile_idx * T_n_compressed];
+        const int lane_tile_register = __ldcs(&GATE_OUT_twell_packed_d[tile_idx * T_n_compressed]);
         const int num_nonzeros = __shfl_sync(0xFFFFFFFFu, lane_tile_register, 0);
         #pragma unroll 1
         for (int idx = 1; idx < num_nonzeros + 1; ++idx)
@@ -452,8 +455,8 @@ __global__ __launch_bounds__(WARP_SIZE) void mm_t2d_high_precision_kernel(
         packed_bfloats_x8[3] = __floats2bfloat162_rn(
             OUT_accum[iter_idx][6], OUT_accum[iter_idx][7]);
 
-        *reinterpret_cast<uint4*>(OUT_d + iter_idx * STRIDE_8xWARP) =
-            *reinterpret_cast<uint4*>(packed_bfloats_x8);
+        __stcs(reinterpret_cast<uint4*>(OUT_d + iter_idx * STRIDE_8xWARP),
+               *reinterpret_cast<uint4*>(packed_bfloats_x8));
     }
 }
 
@@ -501,7 +504,8 @@ __global__ __launch_bounds__(WARP_SIZE) void mm_t2d_high_precision_flex_kernel(
     for(int iter_idx = 0; iter_idx < NUM_LOAD_ITERS; iter_idx += 1)
     {
         *reinterpret_cast<uint4*>(&IN_cached[iter_idx][0]) =
-            *reinterpret_cast<const uint4*>(IN_d + iter_idx * STRIDE_8xWARP);
+            __ldcs(
+                reinterpret_cast<const uint4*>(IN_d + iter_idx * STRIDE_8xWARP));
     }
 
     #pragma unroll 1
@@ -584,8 +588,8 @@ __global__ __launch_bounds__(WARP_SIZE) void mm_t2d_high_precision_flex_kernel(
         packed_bfloats_x8[3] = __floats2bfloat162_rn(
             OUT_accum[iter_idx][6], OUT_accum[iter_idx][7]);
 
-        *reinterpret_cast<uint4*>(OUT_d + iter_idx * STRIDE_8xWARP) =
-            *reinterpret_cast<uint4*>(packed_bfloats_x8);
+        __stcs(reinterpret_cast<uint4*>(OUT_d + iter_idx * STRIDE_8xWARP),
+               *reinterpret_cast<uint4*>(packed_bfloats_x8));
     }
 }
 
@@ -1007,14 +1011,15 @@ __global__ __launch_bounds__(WARP_SIZE) void mm_t2d_inplace_kernel(
     for(int iter_idx = 0; iter_idx < NUM_LOAD_ITERS; iter_idx += 1)
     {
         *reinterpret_cast<uint4*>(&IN_cached[iter_idx][0]) =
-            *reinterpret_cast<const uint4*>(IN_d + iter_idx * STRIDE_8xWARP);
+            __ldcs(
+                reinterpret_cast<const uint4*>(IN_d + iter_idx * STRIDE_8xWARP));
     }
 
     #pragma unroll 1
     for(int tile_idx = 0; tile_idx < NUM_T_n; ++tile_idx)
     {
         // each thread gets one scalar from the packed tile, giving the warp one coalesced access
-        const int lane_tile_register = GATE_OUT_twell_packed_d[tile_idx * T_n_compressed];
+        const int lane_tile_register = __ldcs(&GATE_OUT_twell_packed_d[tile_idx * T_n_compressed]);
         const int num_nonzeros = __shfl_sync(0xFFFFFFFFu, lane_tile_register, 0);
         #pragma unroll 1
         for (int idx = 1; idx < num_nonzeros + 1; ++idx)
@@ -1114,8 +1119,8 @@ __global__ __launch_bounds__(WARP_SIZE) void mm_t2d_inplace_kernel(
         packed_bfloats_x8[3] = __floats2bfloat162_rn(
             OUT_accum[iter_idx][6], OUT_accum[iter_idx][7]);
 
-        *reinterpret_cast<uint4*>(IN_d + iter_idx * STRIDE_8xWARP) =
-            *reinterpret_cast<uint4*>(packed_bfloats_x8);
+        __stcs(reinterpret_cast<uint4*>(IN_d + iter_idx * STRIDE_8xWARP),
+               *reinterpret_cast<uint4*>(packed_bfloats_x8));
     }
 }
 
@@ -1159,7 +1164,8 @@ __global__ __launch_bounds__(WARP_SIZE) void mm_t2d_inplace_flex_kernel(
     for(int iter_idx = 0; iter_idx < NUM_LOAD_ITERS; iter_idx += 1)
     {
         *reinterpret_cast<uint4*>(&IN_cached[iter_idx][0]) =
-            *reinterpret_cast<const uint4*>(IN_d + iter_idx * STRIDE_8xWARP);
+            __ldcs(
+                reinterpret_cast<const uint4*>(IN_d + iter_idx * STRIDE_8xWARP));
     }
 
     #pragma unroll 1
@@ -1265,8 +1271,8 @@ __global__ __launch_bounds__(WARP_SIZE) void mm_t2d_inplace_flex_kernel(
         packed_bfloats_x8[3] = __floats2bfloat162_rn(
             OUT_accum[iter_idx][6], OUT_accum[iter_idx][7]);
 
-        *reinterpret_cast<uint4*>(IN_d + iter_idx * STRIDE_8xWARP) =
-            *reinterpret_cast<uint4*>(packed_bfloats_x8);
+        __stcs(reinterpret_cast<uint4*>(IN_d + iter_idx * STRIDE_8xWARP),
+               *reinterpret_cast<uint4*>(packed_bfloats_x8));
     }
 }
 
@@ -1312,14 +1318,15 @@ __global__ __launch_bounds__(WARP_SIZE) void mm_t2d_high_precision_inplace_kerne
     for(int iter_idx = 0; iter_idx < NUM_LOAD_ITERS; iter_idx += 1)
     {
         *reinterpret_cast<uint4*>(&IN_cached[iter_idx][0]) =
-            *reinterpret_cast<uint4*>(IN_d + iter_idx * STRIDE_8xWARP);
+            __ldcs(
+                reinterpret_cast<const uint4*>(IN_d + iter_idx * STRIDE_8xWARP));
     }
 
     #pragma unroll 1
     for(int tile_idx = 0; tile_idx < NUM_T_n; ++tile_idx)
     {
         // each thread gets one scalar from the packed tile, giving the warp one coalesced access
-        const int lane_tile_register = GATE_OUT_twell_packed_d[tile_idx * T_n_compressed];
+        const int lane_tile_register = __ldcs(&GATE_OUT_twell_packed_d[tile_idx * T_n_compressed]);
         const int num_nonzeros = __shfl_sync(0xFFFFFFFFu, lane_tile_register, 0);
         #pragma unroll 1
         for (int idx = 1; idx < num_nonzeros + 1; ++idx)
@@ -1396,8 +1403,8 @@ __global__ __launch_bounds__(WARP_SIZE) void mm_t2d_high_precision_inplace_kerne
         packed_bfloats_x8[3] = __floats2bfloat162_rn(
             OUT_accum[iter_idx][6], OUT_accum[iter_idx][7]);
 
-        *reinterpret_cast<uint4*>(IN_d + iter_idx * STRIDE_8xWARP) =
-            *reinterpret_cast<uint4*>(packed_bfloats_x8);
+        __stcs(reinterpret_cast<uint4*>(IN_d + iter_idx * STRIDE_8xWARP),
+               *reinterpret_cast<uint4*>(packed_bfloats_x8));
     }
 }
 
@@ -1441,7 +1448,8 @@ __global__ __launch_bounds__(WARP_SIZE) void mm_t2d_high_precision_inplace_flex_
     for(int iter_idx = 0; iter_idx < NUM_LOAD_ITERS; iter_idx += 1)
     {
         *reinterpret_cast<uint4*>(&IN_cached[iter_idx][0]) =
-            *reinterpret_cast<uint4*>(IN_d + iter_idx * STRIDE_8xWARP);
+            __ldcs(
+                reinterpret_cast<const uint4*>(IN_d + iter_idx * STRIDE_8xWARP));
     }
 
     #pragma unroll 1
@@ -1524,8 +1532,8 @@ __global__ __launch_bounds__(WARP_SIZE) void mm_t2d_high_precision_inplace_flex_
         packed_bfloats_x8[3] = __floats2bfloat162_rn(
             OUT_accum[iter_idx][6], OUT_accum[iter_idx][7]);
 
-        *reinterpret_cast<uint4*>(IN_d + iter_idx * STRIDE_8xWARP) =
-            *reinterpret_cast<uint4*>(packed_bfloats_x8);
+        __stcs(reinterpret_cast<uint4*>(IN_d + iter_idx * STRIDE_8xWARP),
+               *reinterpret_cast<uint4*>(packed_bfloats_x8));
     }
 }
 
