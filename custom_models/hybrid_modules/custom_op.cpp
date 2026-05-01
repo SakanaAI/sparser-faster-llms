@@ -38,7 +38,7 @@ using HybridSpPtr = c10::intrusive_ptr<hybrid_sp_t>;
 // Kept alive across calls; user reads it after torch.cuda.synchronize().
 static at::Tensor g_last_transpose_overflow_counter;
 
-std::tuple<at::Tensor, at::Tensor, at::Tensor, HybridSpPtr, HybridSpPtr, HybridSpPtr> ff_forward_cuda_gated(const at::Tensor& X, const at::Tensor& G, const at::Tensor& K,  const at::Tensor& V, int64_t out_size)  {
+std::tuple<at::Tensor, at::Tensor, at::Tensor, HybridSpPtr, HybridSpPtr, HybridSpPtr> ff_forward_cuda_gated(const at::Tensor& X, const at::Tensor& G, const at::Tensor& K,  const at::Tensor& V)  {
     PERF_START("ff_forward_gated_total", 0);
 
     int m = X.size(0) * X.size(1);
@@ -281,7 +281,7 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> ff_backward_cuda_gate
     return {dX, dG, dK, dV};
 }
 
-std::tuple<at::Tensor, at::Tensor, at::Tensor, HybridSpPtr, HybridSpPtr, HybridSpPtr> ff_forward_meta_gated(const at::Tensor& X, const at::Tensor& G, const at::Tensor& K,  const at::Tensor& V, int64_t out_size)  {
+std::tuple<at::Tensor, at::Tensor, at::Tensor, HybridSpPtr, HybridSpPtr, HybridSpPtr> ff_forward_meta_gated(const at::Tensor& X, const at::Tensor& G, const at::Tensor& K,  const at::Tensor& V)  {
     int b = X.size(0);
     int s = X.size(1);
     int d = X.size(2);
@@ -316,7 +316,7 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> ff_backward_meta_gate
 TORCH_LIBRARY(sparse_ops, m) {
     m.class_<hybrid_sp_t>("HybridSp")
         .def("overflow_count_tensor", &hybrid_sp_t::overflow_count_tensor);
-    m.def("ff_forward_gated(Tensor X, Tensor G, Tensor K, Tensor V, int out_size) -> (Tensor, Tensor, Tensor,  __torch__.torch.classes.sparse_ops.HybridSp, __torch__.torch.classes.sparse_ops.HybridSp, __torch__.torch.classes.sparse_ops.HybridSp)");
+    m.def("ff_forward_gated(Tensor X, Tensor G, Tensor K, Tensor V) -> (Tensor, Tensor, Tensor,  __torch__.torch.classes.sparse_ops.HybridSp, __torch__.torch.classes.sparse_ops.HybridSp, __torch__.torch.classes.sparse_ops.HybridSp)");
     m.def("ff_backward_gated(Tensor X, Tensor G, Tensor K, Tensor V, __torch__.torch.classes.sparse_ops.HybridSp P, __torch__.torch.classes.sparse_ops.HybridSp R, __torch__.torch.classes.sparse_ops.HybridSp T, Tensor gR, Tensor gl0, Tensor gl1) -> (Tensor, Tensor, Tensor, Tensor)");
     m.def("ell_spmm_raw(Tensor ell_vals, Tensor ell_cols, Tensor row_counts, Tensor B, int M, int K, int N, int ell_stride, int overflow_threshold) -> Tensor");
     m.def("ell_spmm_raw_orig(Tensor ell_vals, Tensor ell_cols, Tensor row_counts, Tensor B, int M, int K, int N, int ell_stride, int overflow_threshold) -> Tensor");
@@ -364,13 +364,13 @@ class FFSparseGated : public torch::autograd::Function<FFSparseGated> {
 public:
   static torch::autograd::variable_list forward(
       torch::autograd::AutogradContext* ctx,
-      const at::Tensor& X, const at::Tensor& G, const at::Tensor& K, const at::Tensor& V, int64_t out_size) {
+      const at::Tensor& X, const at::Tensor& G, const at::Tensor& K, const at::Tensor& V) {
     at::AutoDispatchBelowADInplaceOrView guard;
     static auto ff_forward_op = torch::Dispatcher::singleton()
       .findSchemaOrThrow("sparse_ops::ff_forward_gated", "")
       .typed<decltype(ff_forward_cuda_gated)>();
 
-    auto result = ff_forward_op.call(X, G, K, V, out_size);
+    auto result = ff_forward_op.call(X, G, K, V);
     ctx->save_for_backward({X, G, K, V});
     ctx->saved_data["P"] = std::get<3>(result);
     ctx->saved_data["R"] = std::get<4>(result);
@@ -396,8 +396,8 @@ public:
 };
 
 
-std::tuple<at::Tensor, at::Tensor, at::Tensor, HybridSpPtr, HybridSpPtr, HybridSpPtr> ff_forward_autograd_gated(const at::Tensor& X, const at::Tensor& G, const at::Tensor& K,  const at::Tensor& V, int64_t out_size) {
-   auto result = FFSparseGated::apply(X, G, K, V, out_size);
+std::tuple<at::Tensor, at::Tensor, at::Tensor, HybridSpPtr, HybridSpPtr, HybridSpPtr> ff_forward_autograd_gated(const at::Tensor& X, const at::Tensor& G, const at::Tensor& K,  const at::Tensor& V) {
+   auto result = FFSparseGated::apply(X, G, K, V);
     // Must return the same thing as the forward op
    auto hybrid = c10::make_intrusive<hybrid_sp_t>(); //dummy
    return {result[0], result[1], result[2], hybrid, hybrid, hybrid};
@@ -407,7 +407,7 @@ TORCH_LIBRARY_IMPL(sparse_ops, AutogradCUDA, m) {
     m.impl("ff_forward_gated", &ff_forward_autograd_gated);
 }
 
-std::tuple<at::Tensor, at::Tensor, at::Tensor, HybridSpPtr, HybridSpPtr, HybridSpPtr> ff_forward_ac_gated(c10::DispatchKeySet ks, const at::Tensor& X, const at::Tensor& G, const at::Tensor& K,  const at::Tensor& V, int64_t out_size)  {
+std::tuple<at::Tensor, at::Tensor, at::Tensor, HybridSpPtr, HybridSpPtr, HybridSpPtr> ff_forward_ac_gated(c10::DispatchKeySet ks, const at::Tensor& X, const at::Tensor& G, const at::Tensor& K,  const at::Tensor& V)  {
     // 1. Disable further Autocast while we’re inside the wrapper
     c10::impl::ExcludeDispatchKeyGuard guard(c10::DispatchKey::Autocast);
     // 2. Pick the dtype AMP is currently using on this thread (fp16 or bf16)
@@ -426,7 +426,7 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, HybridSpPtr, HybridSpPtr, HybridS
       .typed<decltype(ff_forward_cuda_gated)>();
     // This will automatically skip AutocastCUDA (because we removed it from ks)
     // and pick the next key (CUDA → CompositeImplicitAutograd → Autograd → …)
-    return op.redispatch(modified_ks, Xc, Gc, Kc, Vc, out_size);
+    return op.redispatch(modified_ks, Xc, Gc, Kc, Vc);
 }
 
 TORCH_LIBRARY_IMPL(sparse_ops, AutocastCUDA, m) {
