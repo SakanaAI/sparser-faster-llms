@@ -348,7 +348,7 @@ class SparseMLP(nn.Module):
             hidden_states = self.act_fn(gate_projections) * up_projections
         else:
             hidden_states = self.act_fn(self.up_proj(hidden_states))
-        return self.down_proj(hidden_states)
+        return self._down_proj(hidden_states)
     
     def enable_fast(self, use_fast: bool) -> None:
         """Toggle the hybrid-kernel forward path on this layer at runtime.
@@ -358,6 +358,22 @@ class SparseMLP(nn.Module):
         and the kernel cannot consume it).
         """
         self._use_fast = bool(use_fast) and self._use_hybrid_kernel
+
+    def _down_proj(self, activation: torch.Tensor) -> torch.Tensor:
+        """Apply the down projection respecting whichever layout we hold.
+
+        When `_use_hybrid_kernel` is set, `down_proj.weight` was transposed
+        once at construction (and again post-load by `hydra_utils.load_model`)
+        into the kernel-friendly `[intermediate, hidden]` layout, so calling
+        `nn.Linear.forward` (which assumes `[out, in]`) would produce the
+        wrong shape. Compute it directly instead.
+        """
+        if self._use_hybrid_kernel:
+            out = activation @ self.down_proj.weight
+            if self.down_proj.bias is not None:
+                out = out + self.down_proj.bias
+            return out
+        return self.down_proj(activation)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         if self._training_mode:
@@ -391,7 +407,7 @@ class SparseMLP(nn.Module):
                 layer_idx=self.layer_idx,
                 absolute_activations=absolute_activation,
             )
-            return self.down_proj(activation)
+            return self._down_proj(activation)
         else:
             return self._forward_inference(hidden_states)
 

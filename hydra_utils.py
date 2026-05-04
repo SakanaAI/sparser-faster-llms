@@ -58,7 +58,7 @@ def load_model(
             "Model name or path must be provided for loading a pretrained model."
         )
         print(f"Loading model from {model_args.model_name_or_path}")
-        return transformers.AutoModelForCausalLM.from_pretrained(
+        model = transformers.AutoModelForCausalLM.from_pretrained(
             model_args.model_name_or_path,
             from_tf=bool(".ckpt" in model_args.model_name_or_path),
             config=config,
@@ -67,6 +67,18 @@ def load_model(
             dtype=torch_dtype,
             attn_implementation=attn_implementation,
         )
+        # SparseMLP.__init__ transposes down_proj.weight to [intermediate, hidden]
+        # at construction time when sparsity_use_hybrid_kernel is set. from_pretrained
+        # then loads the HF-layout [hidden, intermediate] checkpoint on top of that,
+        # clobbering the transpose. Re-apply it once weights are loaded.
+        if getattr(model.config, "sparsity_use_hybrid_kernel", False):
+            for layer in model.model.layers:
+                mlp = getattr(layer, "mlp", None)
+                if mlp is not None and hasattr(mlp, "down_proj"):
+                    mlp.down_proj.weight.data = (
+                        mlp.down_proj.weight.data.t().contiguous()
+                    )
+        return model
 
     if config is None:
         config = transformers.AutoConfig.from_pretrained(model_args.model_name_or_path)
