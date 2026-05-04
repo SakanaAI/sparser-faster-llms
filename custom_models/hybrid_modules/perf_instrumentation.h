@@ -32,18 +32,16 @@
 #include <algorithm>
 #include <mutex>
 
-// Compile-time flag to enable/disable profiling
+// CUDA-event-based per-kernel timing. Compile-time on/off via ENABLE_PERF_PROFILING;
+// runtime override via the SPARSE_ENABLE_PERF_PROFILING env var.
 #ifndef ENABLE_PERF_PROFILING
 #define ENABLE_PERF_PROFILING 0
 #endif
 
-// Performance profiling infrastructure for CUDA kernels
-// Uses CUDA events for accurate GPU timing with minimal overhead
-
 namespace perf {
 
 struct TimingStats {
-    std::vector<float> samples;  // All timing samples in milliseconds
+    std::vector<float> samples;
     float total_time = 0.0f;
     int count = 0;
 
@@ -96,17 +94,14 @@ private:
 
 public:
     PerformanceProfiler() : enabled_(ENABLE_PERF_PROFILING) {
-        // Check environment variable override
-        const char* env_val = std::getenv("SPARSE_ENABLE_PERF_PROFILING");
-        if (env_val != nullptr) {
-            enabled_ = (std::atoi(env_val) != 0);
+        if (const char* env = std::getenv("SPARSE_ENABLE_PERF_PROFILING")) {
+            enabled_ = (std::atoi(env) != 0);
         }
     }
 
-    ~PerformanceProfiler() {
-        // Skip cleanup - CUDA events will be automatically cleaned up at process exit
-        // Explicitly destroying them can cause issues with shared library unloading order
-    }
+    // Intentionally don't destroy CUDA events: explicit teardown races with
+    // shared-library unload ordering. The driver reclaims them at process exit.
+    ~PerformanceProfiler() {}
 
     bool is_enabled() const { return enabled_; }
 
@@ -115,7 +110,6 @@ public:
 
         std::lock_guard<std::mutex> lock(mutex_);
 
-        // Create or reuse events
         if (start_events_.find(name) == start_events_.end()) {
             cudaEvent_t start, stop;
             cudaError_t err = cudaEventCreate(&start);
@@ -165,13 +159,11 @@ public:
                 "Operation", "Count", "Total(ms)", "Mean(ms)", "Min(ms)", "Max(ms)", "P50(ms)", "Stddev");
         fprintf(out, "--------------------------------------------------------------------------------\n");
 
-        // Calculate total time across all operations
         float total_overall = 0.0f;
         for (const auto& pair : stats_) {
             total_overall += pair.second.total_time;
         }
 
-        // Sort by total time (descending)
         std::vector<std::pair<std::string, TimingStats>> sorted_stats(stats_.begin(), stats_.end());
         std::sort(sorted_stats.begin(), sorted_stats.end(),
                   [](const auto& a, const auto& b) { return a.second.total_time > b.second.total_time; });
@@ -214,13 +206,11 @@ public:
     }
 };
 
-// Global profiler instance
 inline PerformanceProfiler& get_global_profiler() {
     static PerformanceProfiler profiler;
     return profiler;
 }
 
-// RAII timer for automatic start/stop
 class ScopedTimer {
 private:
     std::string name_;
@@ -241,12 +231,10 @@ public:
         }
     }
 
-    // Prevent copying
     ScopedTimer(const ScopedTimer&) = delete;
     ScopedTimer& operator=(const ScopedTimer&) = delete;
 };
 
-// Convenience macros for easy instrumentation
 #if ENABLE_PERF_PROFILING
     #define PERF_TIMER(name, stream) perf::ScopedTimer _perf_timer_##__LINE__(name, stream)
     #define PERF_START(name, stream) perf::get_global_profiler().start_timing(name, stream)

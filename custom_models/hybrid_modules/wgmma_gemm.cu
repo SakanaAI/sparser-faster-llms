@@ -32,50 +32,44 @@
 #include <cstdlib>
 #include "perf_instrumentation.h"
 
-// Compile Hopper-specific device code only for sm_90a (and the host pass so
-// the function declarations are visible for the kernel launch).
+// packed.h pulls in Hopper-only declarations and is only safe to include
+// when device codegen targets sm_90a or when host-only translation runs.
 #if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 900
-
 #include "packed.h"
+#endif
 
-#endif  // !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 900
-
-
-// blocked_ell_to_ell_packed_kernel: convert packed blocked ELL → regular ELL.
-// packed format: uint32_t C_packed[M][N_TILES * T_n_comp], layout per (row, tile):
-//   [tile*T_n_comp + 0]           = NNZ count
-//   [tile*T_n_comp + 1..count]    = packed (global_col_16bit | bf16_val << 16)
+// Converts the packed blocked-ELL workspace produced by the WGMMA kernel into
+// the canonical hybrid ELL. Per-(row, tile) layout in C_packed:
+//   [tile * T_n_comp + 0]            = NNZ count for this tile
+//   [tile * T_n_comp + 1 .. cnt]     = (global_col_u16 | bf16_val << 16)
 __global__ void blocked_ell_to_ell_packed_kernel(
-    const uint32_t*      __restrict__ C_packed, // [M, N_TILES*T_n_comp] uint32
+    const uint32_t*      __restrict__ C_packed,
     __nv_bfloat16*       __restrict__ ell_val,
     int16_t*             __restrict__ ell_col,
     int32_t*             __restrict__ row_nnz,
-    float*               __restrict__ l0_out,   // nullable scalar accumulator
-    float*               __restrict__ l1_out,   // nullable scalar accumulator
+    float*               __restrict__ l0_out,
+    float*               __restrict__ l1_out,
     int M, int N_TILES, int T_n_comp, int ELL_W)
 {
     const int row = (int)(blockIdx.x * blockDim.y + threadIdx.y);
     if (row >= M) return;
-    const int tid = (int)threadIdx.x;  // 0..31
+    const int tid = (int)threadIdx.x;
 
     const uint32_t* tile_ptr = (tid < N_TILES)
         ? C_packed + (size_t)row * N_TILES * T_n_comp + (size_t)tid * T_n_comp
         : nullptr;
 
-    // Count is stored at index 0; cap at T_n_comp-1 (max data slots = T_n_comp-1)
     int cnt = (tid < N_TILES) ? (int)min((uint32_t)tile_ptr[0], (uint32_t)(T_n_comp - 1)) : 0;
 
-    // Inclusive warp prefix scan to get write offsets into ELL
     int offset = cnt;
     for (int delta = 1; delta < 32; delta <<= 1) {
         int recv = __shfl_up_sync(0xFFFFFFFF, offset, delta);
         if (tid >= (unsigned)delta) offset += recv;
     }
     int start = offset - cnt;
+    // total is the true NNZ; do NOT cap it so overflow rows can be detected.
     int total = __shfl_sync(0xFFFFFFFF, offset, min(N_TILES - 1, 31));
-    // Do NOT cap total: store true NNZ so overflow rows are detectable downstream.
 
-    // l0/l1: each active element contributes 1/M and val/M respectively
     float l0_acc = 0.0f, l1_acc = 0.0f;
     if (l0_out && cnt > 0) {
         const float inv_M = 1.0f / (float)M;
@@ -93,12 +87,11 @@ __global__ void blocked_ell_to_ell_packed_kernel(
         for (int i = 0; i < copy_n; i++) {
             uint32_t packed = tile_ptr[i + 1];
             dv[i] = __ushort_as_bfloat16((unsigned short)(packed >> 16));
-            dc[i] = (int16_t)(packed & 0xFFFFu);  // already global col
+            dc[i] = (int16_t)(packed & 0xFFFFu);
         }
     }
     if (tid == 0) row_nnz[row] = total;
 
-    // Warp-reduce l0/l1 and atomicAdd from lane 0
     if (l0_out) {
         for (int s = 16; s > 0; s >>= 1) {
             l0_acc += __shfl_down_sync(0xFFFFFFFF, l0_acc, s);
@@ -109,12 +102,9 @@ __global__ void blocked_ell_to_ell_packed_kernel(
             atomicAdd(l1_out, l1_acc);
         }
     }
-
 }
 
-
-// Populate overflow dense tail for rows whose true NNZ exceeds ELL_WIDTH.
-// One block per row; only overflow rows do any work.
+// One block per row; non-overflow rows exit immediately.
 __global__ void overflow_tail_from_packed_kernel(
     const uint32_t*       __restrict__ C_packed,
     const int32_t*        __restrict__ row_nnz,
@@ -130,13 +120,13 @@ __global__ void overflow_tail_from_packed_kernel(
 
     __shared__ int smem_dr;
     if (threadIdx.x == 0) {
-        int new_dr = atomicAdd(overflow_counter, 1);  // always count
+        int new_dr = atomicAdd(overflow_counter, 1);
         if (discard != 1 && new_dr < tail_cap) {
             tail_dense_map[row]            = new_dr;
             tail_dense_map_reverse[new_dr] = row;
             smem_dr = new_dr;
         } else {
-            smem_dr = -1;  // no mapping; tail_dense_map stays -1
+            smem_dr = -1;
         }
     }
     __syncthreads();
@@ -145,12 +135,12 @@ __global__ void overflow_tail_from_packed_kernel(
 
     __nv_bfloat16* dst = tail_dense + (size_t)dr * N;
 
-    // Vectorized zero-out (N must be a multiple of 8 bf16 = 16 bytes = int4)
+    // N must be a multiple of 8 bf16 (16 bytes = int4).
     for (int base = (int)threadIdx.x * 8; base < N; base += (int)blockDim.x * 8)
         *reinterpret_cast<int4*>(dst + base) = make_int4(0, 0, 0, 0);
     __syncthreads();
 
-    // Scatter all NNZ from packed workspace; tiles cover disjoint column ranges → no races
+    // Tiles cover disjoint column ranges, so no race when scattering.
     for (int tile = (int)threadIdx.x; tile < N_TILES; tile += (int)blockDim.x) {
         const uint32_t* tile_ptr = C_packed + (size_t)row * N_TILES * T_n_comp + (size_t)tile * T_n_comp;
         int cnt = (int)min((uint32_t)tile_ptr[0], (uint32_t)(T_n_comp - 1));

@@ -22,8 +22,8 @@
  */
 
 #include <torch/library.h>
-#include<torch/all.h>
-#include <ATen/autocast_mode.h>          // cached_cast helpers
+#include <torch/all.h>
+#include <ATen/autocast_mode.h>
 #include <c10/core/DispatchKey.h>
 #include <cuda_runtime.h>
 #include <ATen/cuda/CUDAContext.h>
@@ -34,8 +34,8 @@
 
 using HybridSpPtr = c10::intrusive_ptr<hybrid_sp_t>;
 
-// Holds the overflow_counter tensor from the last transpose in the backward pass.
-// Kept alive across calls; user reads it after torch.cuda.synchronize().
+// Stashed by ff_backward_cuda_gated for Python-side inspection after
+// torch.cuda.synchronize(); see torch.ops.sparse_ops_config.get_last_transpose_overflow_count.
 static at::Tensor g_last_transpose_overflow_counter;
 
 std::tuple<at::Tensor, at::Tensor, at::Tensor, HybridSpPtr, HybridSpPtr, HybridSpPtr> ff_forward_cuda_gated(const at::Tensor& X, const at::Tensor& G, const at::Tensor& K,  const at::Tensor& V)  {
@@ -54,8 +54,7 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, HybridSpPtr, HybridSpPtr, HybridS
     c10::intrusive_ptr<hybrid_sp_t> P;
     P = c10::make_intrusive<hybrid_sp_t>(m, n, X.device());
 
-    // packed workspace: allocated lazily, reused across calls.
-    // T_n_comp=32, T_n=256 must match mm_wgmma_nt_128x256x64TS8 instantiation.
+    // T_n_comp / FUSED_T_n must match the mm_wgmma_nt_128x256x64TS8 instantiation.
     static at::Tensor bwell_packed_ws;
     static int ws_M = -1, ws_N_TILES = -1;
     constexpr int T_n_comp  = 32;
@@ -91,15 +90,13 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, HybridSpPtr, HybridSpPtr, HybridS
             P->_ell_stride,
             P->_tail_cap,
             g_discard_overflow);
-        // In discard mode, overflow_counter was incremented (for counting) but no
-        // tail data was written. Zero it so the transpose kernel doesn't iterate
-        // over ghost rows and read past tail_dense_map_reverse bounds.
+        // Discard mode counts overflow rows but writes no tail data; zero the
+        // counter so the transpose kernel doesn't iterate over ghost rows.
         if (g_discard_overflow == 1) {
             cudaError_t err = cudaMemsetAsync(P->overflow_counter(), 0, sizeof(int), stream.stream());
             TORCH_CHECK(err == cudaSuccess, "cudaMemsetAsync failed: ", cudaGetErrorString(err));
         }
     } else {
-        // Fallback for non-H100 or unaligned shapes
         at::Tensor L = torch::einsum("bmn,kn->bmk", {X, G});
         create_hybrid_sparse_from_dense(L, P.get(), l0, l1, m, n, stream);
     }
@@ -126,10 +123,9 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, HybridSpPtr, HybridSpPtr, HybridS
 
     auto R = c10::make_intrusive<hybrid_sp_t>(*P);
     R->reset_vals();
-    at::Tensor acc_init =  at::zeros({}, options_fp32); // Contribution of L1 to the gradient
+    // L1 contribution to the gradient; populated lazily downstream.
+    at::Tensor acc_init = at::zeros({}, options_fp32);
     auto T = c10::make_intrusive<hybrid_sp_t>(*P);
-
-    // Do all ELL ops first and the dense ops the last ones
 
     R->_dense_active_rows = (g_discard_overflow == 1 ? 0 : P->_tail_cap);
     P->_dense_active_rows = (g_discard_overflow == 1 ? 0 : P->_tail_cap);
@@ -163,11 +159,7 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> ff_backward_cuda_gate
       gR_fp.scalar_type() == at::kBFloat16,
       "gR: Expected a Float (bfloat16) tensor but got ", gR_fp.scalar_type());
     auto gR = gR_fp.contiguous();
-    auto acc_dtype = torch::kInt32;
-    auto options = at::TensorOptions().dtype(acc_dtype).device(X.device());
-
-    acc_dtype = torch::kBFloat16;
-    options = at::TensorOptions().dtype(acc_dtype).device(X.device());
+    auto options = at::TensorOptions().dtype(at::kBFloat16).device(X.device());
     at::Tensor dX_r = at::zeros(X.sizes(), options);
     at::Tensor dX_u = at::zeros(X.sizes(), options);
     at::Tensor dG = at::zeros(G.sizes(), options);
@@ -176,10 +168,10 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> ff_backward_cuda_gate
 
     { cudaError_t err = cudaEventSynchronize(P->_counter_copy_ev);
     TORCH_CHECK(err == cudaSuccess, "cudaEventSynchronize failed: ", cudaGetErrorString(err)); }
-    int v = *(P->hN.data_ptr<int>()); // Get the current active tail rows
-    if (g_discard_overflow == 1) v = 0;    // no tail rows populated in discard mode
+    int v = *(P->hN.data_ptr<int>());
+    if (g_discard_overflow == 1) v = 0;
     v = (v + 127) & ~int64_t(127);
-    if (v > P->_tail_cap) v = P->_tail_cap;  // cap to prevent OOB in narrow()
+    if (v > P->_tail_cap) v = P->_tail_cap;
     R->_dense_active_rows = v;
     P->_dense_active_rows = v;
     T->_dense_active_rows = v;
@@ -187,7 +179,8 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> ff_backward_cuda_gate
     PERF_START("transpose1_T", stream);
     transpose_hybrid_dense(*T, T_t, m, n, stream);
     PERF_STOP("transpose1_T");
-    // Async read of the dense matrix row counters here
+    // Kick off async DToH copy of T_t's overflow counter; we sync on it after
+    // the dependent matmul launches so it overlaps with kernel work.
     auto hN = at::empty({1}, at::TensorOptions().device(at::kCPU).dtype(at::kInt).pinned_memory(true));
     cudaError_t err = cudaMemcpyAsync(
         hN.data_ptr<int>(),
@@ -205,7 +198,6 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> ff_backward_cuda_gate
 
     hybrid_sp_t dT(*T);
     dT.reset_vals();
-    // Need to add acc_init here
     auto options_fp32 = at::TensorOptions().dtype(torch::kFloat).device(X.device());
     at::Tensor acc_init = at::zeros({}, options_fp32);
     PERF_START("as_sparse_dT", stream);
@@ -214,19 +206,16 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> ff_backward_cuda_gate
     hybrid_sp_t dR(*T);
 
     dR.reset_vals();
-    // dR vals are the dT vals * P
     PERF_START("elemwise_dR", stream);
     sparse_elementwise(&dR, &dT, P.get(),  m, n, stream);
     PERF_STOP("elemwise_dR");
 
     hybrid_sp_t dU(*T);
-    acc_init =  gl1 * (1.0f / m); // Contribution of L1 to the gradient
+    acc_init = gl1 * (1.0f / m);
     compute_dU(&dU, &dT, R.get(), P.get(), acc_init, m, n, stream);
 
-    // Transpose dR and dU for the products
     hybrid_sp_t dR_t(n, m, X.device(), g_ell_width_transpose, g_tail_rows_transpose);
     PERF_START("transpose2_dR", stream);
-    // OPTIMIZATION: Reuse tail_maps from T_t (same sparsity pattern)
     transpose_hybrid_dense(dR, dR_t, m, n, stream,
                           T_t.tail_dense_map(),
                           T_t.tail_dense_map_reverse());
@@ -234,7 +223,6 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> ff_backward_cuda_gate
     PERF_STOP("transpose2_dR");
     hybrid_sp_t dU_t(n, m, X.device(), g_ell_width_transpose, g_tail_rows_transpose);
     PERF_START("transpose3_dU", stream);
-    // OPTIMIZATION: Reuse tail_maps from T_t (same sparsity pattern)
     transpose_hybrid_dense(dU, dU_t, m, n, stream,
                           T_t.tail_dense_map(),
                           T_t.tail_dense_map_reverse());
@@ -249,13 +237,12 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> ff_backward_cuda_gate
     PERF_STOP("gemm_dU_G");
     auto dX = dX_r + dX_u;
 
-    // Wait for the overflow counter to arrive to the host
     { cudaError_t err = cudaEventSynchronize(ev);
     TORCH_CHECK(err == cudaSuccess, "cudaEventSynchronize failed: ", cudaGetErrorString(err)); }
     v = *hN.data_ptr<int>();
     v = (v + 127) & ~int64_t(127);
     if (v > T_t._tail_cap) {
-        fprintf(stderr, "Warning: transpose overflow %d exceeds tail_cap %d, capping\n", v, T_t._tail_cap);
+        TORCH_WARN("transpose overflow ", v, " exceeds tail_cap ", T_t._tail_cap, ", capping");
         v = T_t._tail_cap;
     }
     dR_t._dense_active_rows = v;
@@ -285,16 +272,9 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, HybridSpPtr, HybridSpPtr, HybridS
     int b = X.size(0);
     int s = X.size(1);
     int d = X.size(2);
-    
-    auto acc_dtype = torch::kInt32;
-    auto options = at::TensorOptions().dtype(acc_dtype).device(X.device());
 
-    acc_dtype = torch::kFloat;
-    options = at::TensorOptions().dtype(acc_dtype).device(X.device());
+    auto options = at::TensorOptions().dtype(at::kFloat).device(X.device());
     at::Tensor out = at::empty({b, s, d}, options);
-
-    acc_dtype = torch::kFloat;
-    options = at::TensorOptions().dtype(acc_dtype).device(X.device());
     at::Tensor l0 = at::empty({}, options);
     at::Tensor l1 = at::empty({}, options);
     auto hybrid = c10::make_intrusive<hybrid_sp_t>(b*s, d, X.device());
@@ -303,8 +283,7 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, HybridSpPtr, HybridSpPtr, HybridS
 
 
 std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> ff_backward_meta_gated(const at::Tensor& X, const at::Tensor& G, const at::Tensor& K, const at::Tensor& V, HybridSpPtr P, HybridSpPtr R, HybridSpPtr T, const at::Tensor& gR,const at::Tensor& gl0,const at::Tensor& gl1) {
-    auto acc_dtype = torch::kFloat;
-    auto options = at::TensorOptions().dtype(acc_dtype).device(X.device());
+    auto options = at::TensorOptions().dtype(at::kFloat).device(X.device());
     at::Tensor dx = at::empty(X.sizes(), options);
     at::Tensor dg = at::empty(G.sizes(), options);
     at::Tensor dk = at::empty(K.sizes(), options);
@@ -319,17 +298,15 @@ TORCH_LIBRARY(sparse_ops, m) {
     m.def("ff_forward_gated(Tensor X, Tensor G, Tensor K, Tensor V) -> (Tensor, Tensor, Tensor,  __torch__.torch.classes.sparse_ops.HybridSp, __torch__.torch.classes.sparse_ops.HybridSp, __torch__.torch.classes.sparse_ops.HybridSp)");
     m.def("ff_backward_gated(Tensor X, Tensor G, Tensor K, Tensor V, __torch__.torch.classes.sparse_ops.HybridSp P, __torch__.torch.classes.sparse_ops.HybridSp R, __torch__.torch.classes.sparse_ops.HybridSp T, Tensor gR, Tensor gl0, Tensor gl1) -> (Tensor, Tensor, Tensor, Tensor)");
     m.def("ell_spmm_raw(Tensor ell_vals, Tensor ell_cols, Tensor row_counts, Tensor B, int M, int K, int N, int ell_stride, int overflow_threshold) -> Tensor");
-    m.def("ell_spmm_raw_orig(Tensor ell_vals, Tensor ell_cols, Tensor row_counts, Tensor B, int M, int K, int N, int ell_stride, int overflow_threshold) -> Tensor");
-    m.def("ell_spmm_raw_persistent(Tensor ell_vals, Tensor ell_cols, Tensor row_counts, Tensor B, int M, int K, int N, int ell_stride, int overflow_threshold) -> Tensor");
 }
 
 TORCH_LIBRARY_IMPL(sparse_ops, CUDA, m) {
     m.impl("ff_forward_gated", &ff_forward_cuda_gated);
     m.impl("ff_backward_gated", &ff_backward_cuda_gated);
     m.impl("ell_spmm_raw", &ell_spmm_raw);
-    m.impl("ell_spmm_raw_orig", &ell_spmm_raw_orig);
-    m.impl("ell_spmm_raw_persistent", &ell_spmm_raw_persistent);
-}TORCH_LIBRARY(sparse_ops_config, m) {
+}
+
+TORCH_LIBRARY(sparse_ops_config, m) {
     m.def("set_ell_create_warps_per_row(int v) -> ()");
     m.def("set_ell_width_regular(int v) -> ()");
     m.def("set_ell_width_transpose(int v) -> ()");
@@ -358,8 +335,6 @@ TORCH_LIBRARY_IMPL(sparse_ops, Meta, m) {
     m.impl("ff_backward_gated", &ff_backward_meta_gated);
 }
 
-// Code for custom backward in C++
-
 class FFSparseGated : public torch::autograd::Function<FFSparseGated> {
 public:
   static torch::autograd::variable_list forward(
@@ -375,7 +350,6 @@ public:
     ctx->saved_data["P"] = std::get<3>(result);
     ctx->saved_data["R"] = std::get<4>(result);
     ctx->saved_data["T"] = std::get<5>(result);
-    // Must return the same thing as the forward op
     return {std::get<0>(result), std::get<1>(result), std::get<2>(result)};
   }
 
@@ -391,15 +365,16 @@ public:
     auto T = ctx->saved_data["T"].toCustomClass<hybrid_sp_t>();
     auto result = ff_backward_op.call(saved_tensors[0], saved_tensors[1], saved_tensors[2], saved_tensors[3], P, R, T, grad_output[0], grad_output[1], grad_output[2]);
     at::Tensor undef;
-    return {std::get<0>(result), std::get<1>(result), std::get<2>(result), std::get<3>(result), undef}; 
+    return {std::get<0>(result), std::get<1>(result), std::get<2>(result), std::get<3>(result), undef};
   }
 };
 
-
-std::tuple<at::Tensor, at::Tensor, at::Tensor, HybridSpPtr, HybridSpPtr, HybridSpPtr> ff_forward_autograd_gated(const at::Tensor& X, const at::Tensor& G, const at::Tensor& K,  const at::Tensor& V) {
+std::tuple<at::Tensor, at::Tensor, at::Tensor, HybridSpPtr, HybridSpPtr, HybridSpPtr> ff_forward_autograd_gated(const at::Tensor& X, const at::Tensor& G, const at::Tensor& K, const at::Tensor& V) {
    auto result = FFSparseGated::apply(X, G, K, V);
-    // Must return the same thing as the forward op
-   auto hybrid = c10::make_intrusive<hybrid_sp_t>(); //dummy
+   // The autograd entry point doesn't expose P/R/T to Python; the saved state
+   // lives on the autograd context and is consumed in backward(). Return
+   // empty hybrids so the schema's six-tuple signature stays satisfied.
+   auto hybrid = c10::make_intrusive<hybrid_sp_t>();
    return {result[0], result[1], result[2], hybrid, hybrid, hybrid};
 }
 
@@ -408,24 +383,18 @@ TORCH_LIBRARY_IMPL(sparse_ops, AutogradCUDA, m) {
 }
 
 std::tuple<at::Tensor, at::Tensor, at::Tensor, HybridSpPtr, HybridSpPtr, HybridSpPtr> ff_forward_ac_gated(c10::DispatchKeySet ks, const at::Tensor& X, const at::Tensor& G, const at::Tensor& K,  const at::Tensor& V)  {
-    // 1. Disable further Autocast while we’re inside the wrapper
     c10::impl::ExcludeDispatchKeyGuard guard(c10::DispatchKey::Autocast);
-    // 2. Pick the dtype AMP is currently using on this thread (fp16 or bf16)
     c10::DispatchKeySet modified_ks = ks.remove(c10::DispatchKey::AutocastCUDA);
     auto target_dtype = at::autocast::get_autocast_dtype(at::kCUDA);
 
-    // 3. Cast only if needed (cached_cast is a no-op for non-float / already-cast tensors)
     auto Xc = at::autocast::cached_cast(target_dtype, X);
     auto Gc = at::autocast::cached_cast(target_dtype, G);
     auto Kc = at::autocast::cached_cast(target_dtype, K);
     auto Vc = at::autocast::cached_cast(target_dtype, V);
 
-
     static auto op = torch::Dispatcher::singleton()
       .findSchemaOrThrow("sparse_ops::ff_forward_gated", "")
       .typed<decltype(ff_forward_cuda_gated)>();
-    // This will automatically skip AutocastCUDA (because we removed it from ks)
-    // and pick the next key (CUDA → CompositeImplicitAutograd → Autograd → …)
     return op.redispatch(modified_ks, Xc, Gc, Kc, Vc);
 }
 
@@ -433,16 +402,8 @@ TORCH_LIBRARY_IMPL(sparse_ops, AutocastCUDA, m) {
     m.impl("ff_forward_gated", &ff_forward_ac_gated);
 }
 
-// Python-accessible functions for profiling control
 void print_perf_report() {
-#if ENABLE_PERF_PROFILING
-    fprintf(stderr, "[DEBUG] ENABLE_PERF_PROFILING is 1, profiling is enabled\n");
-#else
-    fprintf(stderr, "[DEBUG] ENABLE_PERF_PROFILING is 0, profiling is DISABLED\n");
-#endif
-    fprintf(stderr, "[DEBUG] Calling PERF_REPORT()\n");
     PERF_REPORT();
-    fprintf(stderr, "[DEBUG] PERF_REPORT() returned\n");
 }
 
 void reset_perf_stats() {

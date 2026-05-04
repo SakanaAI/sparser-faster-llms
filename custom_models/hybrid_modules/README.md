@@ -38,7 +38,7 @@ When `SPARSE_OPS_PREBUILT` is set, the loader skips JIT entirely and calls `torc
 |---|---|
 | `SPARSE_OPS_PREBUILT` | Full path to a prebuilt `sparse_ops.so`. Skips JIT compilation. |
 | `SPARSE_ENABLE_PERF_PROFILING` | `1` to enable per-kernel CUDA-event profiling. Baked into the JIT compile flags and read at runtime by `PerformanceProfiler`. |
-| `TORCH_CUDA_ARCH_LIST` | Standard PyTorch arch list. Drives nvcc; also decides whether `matmul_d2t.cu` is added to the JIT source list. Default: `8.0`. |
+| `TORCH_CUDA_ARCH_LIST` | Standard PyTorch arch list. Drives nvcc; also decides whether `matmul_d2t.cu` is added to the JIT source list. Default: `9.0a`. |
 
 ## Quick start: gated MLP forward + backward
 

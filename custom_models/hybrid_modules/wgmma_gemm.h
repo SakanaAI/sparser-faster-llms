@@ -28,8 +28,8 @@
 #include <cstdint>
 #include "constants.h"
 
-// Populate overflow dense tail for rows whose NNZ exceeded ELL_WIDTH in the packed path.
-// Must be called after blocked_ell_to_ell_packed_kernel has written true row_nnz values.
+// Populates the dense tail for rows whose true NNZ (written by
+// blocked_ell_to_ell_packed_kernel) exceeded the ELL stride.
 void populate_overflow_tail_from_packed(
     const uint32_t*      C_packed,
     const int32_t*       row_nnz,
@@ -41,18 +41,17 @@ void populate_overflow_tail_from_packed(
     cudaStream_t stream,
     int ell_w, int tail_cap, int discard);
 
-// Write GEMM (X @ G^T) directly into ELL format via packed blocked-ELL intermediate.
-// Returns true  → WGMMA kernel + convert kernel launched, ELL buffers populated.
-// Returns false → prerequisites not met (non-H100 or unaligned shapes);
-//                 caller should fall back to einsum + create_hybrid_sparse_from_dense.
+// Fused gate GEMM (X @ G^T) -> hybrid sparse via a packed blocked-ELL workspace.
+// Returns false on non-Hopper builds or unaligned shapes; the caller should then
+// take the einsum + create_hybrid_sparse_from_dense fallback.
 bool wgmma_gate_gemm_to_ell_packed(
-    const at::Tensor& X_flat,   // [M, K] bf16 row-major
-    const at::Tensor& G,        // [N, K] bf16 row-major
+    const at::Tensor& X_flat,
+    const at::Tensor& G,
     int M, int N, int K,
-    uint16_t*        ell_col,   // P->ell_col_indices()     [M, ELL_WIDTH]
-    __nv_bfloat16*   ell_val,   // P->ell_values()          [M, ELL_WIDTH]
-    int32_t*         row_nnz,   // P->row_counters()        [M]
-    uint32_t*        C_packed,  // workspace [M, N_TILES*T_n_comp] uint32
-    float*           l0_out,    // nullable scalar accumulator
-    float*           l1_out,    // nullable scalar accumulator
+    uint16_t*        ell_col,
+    __nv_bfloat16*   ell_val,
+    int32_t*         row_nnz,
+    uint32_t*        C_packed,
+    float*           l0_out,
+    float*           l1_out,
     cudaStream_t stream);
