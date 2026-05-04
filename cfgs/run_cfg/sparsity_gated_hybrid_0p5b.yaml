@@ -4,8 +4,8 @@ defaults:
   - override /trainer_cfg@_global_: logging_trainer
   - _self_
 
-model_log_name: transformer0p5Bcustom
-model_name_or_path: transformer0p5Bcustom
+model_log_name: transformer0p5Bcustom_hybrid
+model_name_or_path: transformer0p5Bcustom_hybrid
 tokenizer_name_or_path: HuggingFaceTB/SmolLM2-360M
 
 make_dataset_fn:
@@ -53,16 +53,11 @@ model_custom_config:
   mlp_bias: false
 
 sparsity_mlp_execution_logic: "training"
-# Route SparseMLP forward through torch.ops.sparse_ops.ff_forward_gated (the
-# hybrid_modules CUDA kernel). When false, the einsum path is used. The kernel
-# only emits scalar l0/l1 per layer per forward, so per-neuron dead-neuron
-# tracking is stale on layers where this is on (use sparsity_l0_cutoff to keep
-# less-sparse layers on the einsum path).
-sparsity_use_hybrid_kernel: false
-# When > 0, every sparsity_l0_cutoff_period forward steps each layer's most
-# recent L0 is compared against this cutoff: layers with L0 < cutoff route
-# through the kernel; the rest fall back to einsum. -1 disables auto-switching.
-sparsity_l0_cutoff: -1
+# Hybrid-kernel variant: route SparseMLP forward through ff_forward_gated, with
+# adaptive auto-switch — layers whose L0 falls below the cutoff use the kernel,
+# the rest stay on the einsum path so dead-neuron tracking keeps refreshing.
+sparsity_use_hybrid_kernel: true
+sparsity_l0_cutoff: 50
 sparsity_l0_cutoff_period: 20
 
 make_tokenizer_fn: ${tokenizer}
@@ -117,4 +112,3 @@ sparsity_l1_coeff: 3e-4
 streaming: true
 wandb_project: sparse-llm-reg
 wandb_run_name: ${model_log_name}_Gated_${max_seq_length}ctx_lr_${learning_rate}_l1${sparsity_l1_coeff}
-

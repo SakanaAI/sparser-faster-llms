@@ -112,7 +112,7 @@ model_args:
   torch_dtype: bfloat16
   attn_implementation: flash_attention_2
 custom_class:
-  _target_: custom_models.hybrid_modules.sparse_models.SparseLlamaForCausalLM
+  _target_: custom_models.sparse_models.SparseLlamaForCausalLM
 ```
 
 State-dict round-trips between HF, sparse, and TwELL formats are handled by `_convert_sparse_state_dict` in `../sparse_testing_utils.py`, which applies the same transpose for `down_proj.weight` / `down_weight` so checkpoints stay consistent across formats.

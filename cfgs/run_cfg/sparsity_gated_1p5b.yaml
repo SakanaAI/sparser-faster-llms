@@ -47,9 +47,16 @@ model_custom_config:
   sparsity_gated_mlp: true
   sparsity_reinitialize: true
   sparsity_mlp_execution_logic: ${sparsity_mlp_execution_logic}
+  sparsity_use_hybrid_kernel: ${sparsity_use_hybrid_kernel}
+  sparsity_l0_cutoff: ${sparsity_l0_cutoff}
+  sparsity_l0_cutoff_period: ${sparsity_l0_cutoff_period}
   mlp_bias: false
 
 sparsity_mlp_execution_logic: "training"
+# See sparsity_gated_0p5b.yaml for what these toggles do.
+sparsity_use_hybrid_kernel: false
+sparsity_l0_cutoff: -1
+sparsity_l0_cutoff_period: 20
 
 make_tokenizer_fn: ${tokenizer}
 
