@@ -196,6 +196,13 @@ bool wgmma_gate_gemm_to_ell_packed(
     float*           l1_out,
     cudaStream_t stream)
 {
+    // __CUDA_ARCH_LIST__ is auto-set by nvcc (CUDA 12+) on both host and device passes.
+    // When the build does not target sm_90a+, matmul_d2t.cu is excluded from sources,
+    // so calling mm_wgmma_nt_128x256x64TS8 would be a link error. Skip the WGMMA path
+    // and let custom_op.cpp take the einsum + create_hybrid_sparse_from_dense fallback.
+#if !defined(__CUDA_ARCH_LIST__) || (__CUDA_ARCH_LIST__) < 900
+    return false;
+#else
     int dev = X_flat.get_device();
     int major;
     cudaError_t err = cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
@@ -232,6 +239,7 @@ bool wgmma_gate_gemm_to_ell_packed(
     PERF_STOP("bell_to_ell");
 
     return true;
+#endif  // __CUDA_ARCH_LIST__ < 900
 }
 
 #endif  // !__CUDA_ARCH__

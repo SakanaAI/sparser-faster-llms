@@ -8,8 +8,8 @@ import torch
 import torch.nn as nn
 import torch.distributed as dist
 
-sparse_lib_path = os.environ.get("SPARSE_LIB_PATH", ".")
-torch.ops.load_library(os.path.join(sparse_lib_path, "sparse_ops.so"))
+from sparse_ops_loader import load_sparse_ops
+load_sparse_ops()
 
 # modify this value to dynamically switch between sparse/dense ops
 L0_CUTOFF = 70

@@ -2,37 +2,50 @@
 
 Training-time CUDA kernels for sparse gated MLPs (Llama, Qwen) on H100. Weights and activations live in a hybrid ELL + dense-tail format and are exposed to PyTorch as `torch.ops.sparse_ops.*`. See `CLAUDE.md` for kernel-level architecture; the runtime tuning API lives in [Runtime configuration](#runtime-configuration) below.
 
-## Build
+## Build / loading
+
+Default: JIT-compile via `torch.utils.cpp_extension.load()` on first call to `load_sparse_ops()`. No manual build step.
+
+```python
+from sparse_ops_loader import load_sparse_ops
+load_sparse_ops()                      # registers torch.ops.sparse_ops.*
+```
+
+The loader inspects `TORCH_CUDA_ARCH_LIST` (default `8.0`) and:
+
+- Always compiles `custom_op.cpp`, `hybrid_sp.cu`, `wgmma_gemm.cu`.
+- Adds `../twell_modules/matmul_d2t.cu` only when an sm_90a+ target is present (it uses Hopper-only PTX). `wgmma_gemm.cu` self-gates the WGMMA call via `__CUDA_ARCH_LIST__`, so on pre-Hopper builds the kernel is never linked and `ff_forward_gated` falls back to einsum + `create_hybrid_sparse_from_dense`.
+
+### Pre-built `.so` (no nvcc on the load machine)
+
+When the runtime machine has no nvcc, build the `.so` once on a machine that does and ship it. Point the loader at it via `SPARSE_OPS_PREBUILT`:
 
 ```bash
+# On a build machine with nvcc:
 cd custom_models/hybrid_modules
-python setup.py build
+python setup.py build           # produces build/lib.linux-x86_64-3.10/sparse_ops.so
+
+# On the runtime machine:
+export SPARSE_OPS_PREBUILT=/path/to/sparse_ops.so
+python -c "from sparse_ops_loader import load_sparse_ops; load_sparse_ops()"
 ```
 
-- Output: `build/lib.linux-x86_64-3.10/sparse_ops.so`
-- GPU target: H100 / sm_90a.
+When `SPARSE_OPS_PREBUILT` is set, the loader skips JIT entirely and calls `torch.ops.load_library()` on the given path.
 
-## Loading the extension
+### Environment variables
 
-No install step. Either:
-
-```python
-import torch
-torch.ops.load_library("build/lib.linux-x86_64-3.10/sparse_ops.so")
-```
-
-or
-
-```python
-import sys; sys.path.insert(0, "build/lib.linux-x86_64-3.10")
-import sparse_ops  # registers torch.ops.sparse_ops.*
-```
+| Var | Purpose |
+|---|---|
+| `SPARSE_OPS_PREBUILT` | Full path to a prebuilt `sparse_ops.so`. Skips JIT compilation. |
+| `SPARSE_ENABLE_PERF_PROFILING` | `1` to enable per-kernel CUDA-event profiling. Baked into the JIT compile flags and read at runtime by `PerformanceProfiler`. |
+| `TORCH_CUDA_ARCH_LIST` | Standard PyTorch arch list. Drives nvcc; also decides whether `matmul_d2t.cu` is added to the JIT source list. Default: `8.0`. |
 
 ## Quick start: gated MLP forward + backward
 
 ```python
 import torch
-torch.ops.load_library("build/lib.linux-x86_64-3.10/sparse_ops.so")
+from sparse_ops_loader import load_sparse_ops
+load_sparse_ops()
 
 B_S, D, H = 16384, 2048, 5632  # tokens, hidden, intermediate
 X = torch.randn(B_S, D, dtype=torch.bfloat16, device="cuda", requires_grad=True)
@@ -60,7 +73,7 @@ loss.backward()  # autograd dispatches ff_backward_gated
 | `torch.ops.sparse_ops.ff_backward_gated(...)` | Driven by autograd. Not called directly. |
 | `torch.ops.sparse_ops.ell_spmm_raw(...)` | Low-level ELL x dense GEMM. See `benchmark_spmm.py`. |
 | `torch.ops.sparse_ops_config.set_*` | Runtime tunables; see [Runtime configuration](#runtime-configuration). |
-| `torch.ops.sparse_ops_perf.{reset_stats,print_report}` | Active only when built with `ENABLE_PROFILING=1`. |
+| `torch.ops.sparse_ops_perf.{reset_stats,print_report}` | Active only when built with `SPARSE_ENABLE_PERF_PROFILING=1`. |
 
 ## sparse_models.py
 
@@ -108,7 +121,7 @@ State-dict round-trips between HF, sparse, and TwELL formats are handled by `_co
 
 All settings live in `torch.ops.sparse_ops_config` and take effect immediately for the **next allocated** sparse object or the next kernel launch. They do **not** retroactively change already-allocated buffers.
 
-Profiling lives in a separate namespace, `torch.ops.sparse_ops_perf`, and only does anything when the extension was built with `ENABLE_PROFILING=1`.
+Profiling lives in a separate namespace, `torch.ops.sparse_ops_perf`, and only does anything when the extension was built with `SPARSE_ENABLE_PERF_PROFILING=1`.
 
 ### ELL width
 
@@ -230,9 +243,9 @@ These are fixed at construction and do not change when the global setters are ca
 ### Worked example
 
 ```python
-import torch, sys
-sys.path.insert(0, "build/lib.linux-x86_64-3.10")
-import sparse_ops
+import torch
+from sparse_ops_loader import load_sparse_ops
+load_sparse_ops()
 
 # Use a tighter ELL for regular ops, larger for transpose
 torch.ops.sparse_ops_config.set_ell_width_regular(64)

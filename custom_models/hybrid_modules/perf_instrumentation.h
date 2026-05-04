@@ -97,7 +97,7 @@ private:
 public:
     PerformanceProfiler() : enabled_(ENABLE_PERF_PROFILING) {
         // Check environment variable override
-        const char* env_val = std::getenv("ENABLE_PERF_PROFILING");
+        const char* env_val = std::getenv("SPARSE_ENABLE_PERF_PROFILING");
         if (env_val != nullptr) {
             enabled_ = (std::atoi(env_val) != 0);
         }
