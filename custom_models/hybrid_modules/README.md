@@ -11,7 +11,7 @@ from sparse_ops_loader import load_sparse_ops
 load_sparse_ops()                      # registers torch.ops.sparse_ops.*
 ```
 
-The loader inspects `TORCH_CUDA_ARCH_LIST` (default `8.0`) and:
+The loader inspects `TORCH_CUDA_ARCH_LIST` (default `9.0a`) and:
 
 - Always compiles `custom_op.cpp`, `hybrid_sp.cu`, `wgmma_gemm.cu`.
 - Adds `../twell_modules/matmul_d2t.cu` only when an sm_90a+ target is present (it uses Hopper-only PTX). `wgmma_gemm.cu` self-gates the WGMMA call via `__CUDA_ARCH_LIST__`, so on pre-Hopper builds the kernel is never linked and `ff_forward_gated` falls back to einsum + `create_hybrid_sparse_from_dense`.

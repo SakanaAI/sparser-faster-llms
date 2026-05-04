@@ -14,7 +14,7 @@ from torch.utils.cpp_extension import CUDA_HOME, load
 #                                  produce distinct cached builds.
 # TORCH_CUDA_ARCH_LIST is honored as-is (set by torch / user) and drives nvcc.
 
-os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "8.0")
+os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "9.0a")
 
 _BASE_DIR = Path(__file__).resolve().parent
 _EXT_NAME = "sparse_ops"
