@@ -207,16 +207,6 @@ print(f"Transpose overflow rows: {t_overflow}")
 
 This returns the overflow counter from the most recent `transpose_hybrid_dense` call in the backward pass (`T^T`). It reflects rows that exceeded the transpose ELL width.
 
-### ELL creation kernel tuning
-
-Controls the dense-to-ELL conversion kernel used in the non-H100 fallback path (`create_hybrid_sparse_from_dense`). On H100 the WGMMA fused path is used instead.
-
-```python
-torch.ops.sparse_ops_config.set_ell_create_warps_per_row(N)
-# N=0: one warp per row, multiple rows per block (default)
-# N=1,2,4,8: N warps cooperate on a single row (faster for wide rows)
-```
-
 ### Per-object properties (C++)
 
 Each `hybrid_sp_t` object stores its own allocation parameters, set at construction time:
@@ -238,7 +228,6 @@ These are fixed at construction and do not change when the global setters are ca
 | Tail capacity (regular) | 2048 | `set_tail_rows_regular(v)` |
 | Tail capacity (transpose) | 2048 | `set_tail_rows_transpose(v)` |
 | Discard overflow | 0 (off) | `set_discard_overflow(0\|1)` |
-| Warps per row | 0 (multi-row) | `set_ell_create_warps_per_row(0\|1\|2\|4\|8)` |
 
 ### Worked example
 

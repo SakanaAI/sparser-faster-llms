@@ -27,7 +27,6 @@
 #include <c10/core/DispatchKey.h>
 #include <cuda_runtime.h>
 #include <ATen/cuda/CUDAContext.h>
-#include <nvtx3/nvToolsExt.h>
 #include "hybrid_sp.h"
 #include "perf_instrumentation.h"
 #include "wgmma_gemm.h"
@@ -132,7 +131,7 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, HybridSpPtr, HybridSpPtr, HybridS
     T->_dense_active_rows = (g_discard_overflow == 1 ? 0 : P->_tail_cap);
     new_product_as_sparse_sma(R.get(), X, K, acc_init, m, n, k, stream);
     sparse_elementwise(T.get(), R.get(), P.get(), m, n, stream);
-    sparse_dense_gemm_hybrid_dense(out2, T.get(), V, m, k, n, false, stream);
+    sparse_dense_gemm_hybrid_dense(out2, T.get(), V, m, k, n, stream);
 
     PERF_STOP("ff_forward_gated_total");
     return {out2, l0, l1, P, R, T};
@@ -212,7 +211,7 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> ff_backward_cuda_gate
 
     hybrid_sp_t dU(*T);
     acc_init = gl1 * (1.0f / m);
-    compute_dU(&dU, &dT, R.get(), P.get(), acc_init, m, n, stream);
+    compute_dU(&dU, &dT, R.get(), P.get(), acc_init, n, stream);
 
     hybrid_sp_t dR_t(n, m, X.device(), g_ell_width_transpose, g_tail_rows_transpose);
     PERF_START("transpose2_dR", stream);
@@ -230,10 +229,10 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> ff_backward_cuda_gate
     PERF_STOP("transpose3_dU");
 
     PERF_START("gemm_dR_K", stream);
-    sparse_dense_gemm_hybrid_dense(dX_r, &dR, K, m, k, n, true, stream);
+    sparse_dense_gemm_hybrid_dense(dX_r, &dR, K, m, k, n, stream);
     PERF_STOP("gemm_dR_K");
     PERF_START("gemm_dU_G", stream);
-    sparse_dense_gemm_hybrid_dense(dX_u, &dU, G, m, k, n, true, stream);
+    sparse_dense_gemm_hybrid_dense(dX_u, &dU, G, m, k, n, stream);
     PERF_STOP("gemm_dU_G");
     auto dX = dX_r + dX_u;
 
@@ -249,13 +248,13 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> ff_backward_cuda_gate
     dU_t._dense_active_rows = v;
     T_t._dense_active_rows = v;
     PERF_START("gemm_dR_t_X", stream);
-    sparse_dense_gemm_hybrid_dense(dK, &dR_t, X, n, k, m, false, stream, X);
+    sparse_dense_gemm_hybrid_dense(dK, &dR_t, X, n, k, m, stream);
     PERF_STOP("gemm_dR_t_X");
     PERF_START("gemm_dU_t_X", stream);
-    sparse_dense_gemm_hybrid_dense(dG, &dU_t, X, n, k, m, false, stream, X);
+    sparse_dense_gemm_hybrid_dense(dG, &dU_t, X, n, k, m, stream);
     PERF_STOP("gemm_dU_t_X");
     PERF_START("gemm_T_t_gR", stream);
-    sparse_dense_gemm_hybrid_dense(dV, &T_t, gR, n, k, m, false, stream, gR);
+    sparse_dense_gemm_hybrid_dense(dV, &T_t, gR, n, k, m, stream);
     PERF_STOP("gemm_T_t_gR");
 
     // Stash T_t's overflow counter so Python can read it after synchronize().
@@ -307,7 +306,6 @@ TORCH_LIBRARY_IMPL(sparse_ops, CUDA, m) {
 }
 
 TORCH_LIBRARY(sparse_ops_config, m) {
-    m.def("set_ell_create_warps_per_row(int v) -> ()");
     m.def("set_ell_width_regular(int v) -> ()");
     m.def("set_ell_width_transpose(int v) -> ()");
     m.def("set_tail_rows_regular(int v) -> ()");
@@ -317,7 +315,6 @@ TORCH_LIBRARY(sparse_ops_config, m) {
 }
 
 TORCH_LIBRARY_IMPL(sparse_ops_config, CompositeExplicitAutograd, m) {
-    m.impl("set_ell_create_warps_per_row",   [](int64_t v) { set_ell_create_warps_per_row((int)v); });
     m.impl("set_ell_width_regular",         [](int64_t v) { set_ell_width_regular((int)v); });
     m.impl("set_ell_width_transpose",       [](int64_t v) { set_ell_width_transpose((int)v); });
     m.impl("set_tail_rows_regular",         [](int64_t v) { set_tail_rows_regular((int)v); });

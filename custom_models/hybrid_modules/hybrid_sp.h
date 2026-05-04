@@ -25,7 +25,6 @@
 
 #include <torch/all.h>
 #include <cuda_runtime.h>
-#include "constants.h"
 
 // Hybrid ELL + dense-tail sparse matrix. Rows whose NNZ fits in _ell_stride
 // live in the ELL buffers; the rest are spilled into _tail_dense and indexed
@@ -62,9 +61,9 @@ struct hybrid_sp_t : torch::CustomClassHolder {
 
 void new_product_as_sparse_sma(hybrid_sp_t* out, at::Tensor const& a, at::Tensor const& b, at::Tensor const& init_val, int M, int N, int K, cudaStream_t stream);
 void transpose_hybrid_dense(const hybrid_sp_t& A, hybrid_sp_t& AT, int M_rows, int N_cols, cudaStream_t stream, const int* precomputed_tail_dense_map = nullptr, const int* precomputed_tail_dense_map_reverse = nullptr);
-void sparse_dense_gemm_hybrid_dense(at::Tensor& out, hybrid_sp_t* A, const at::Tensor& B, int M, int N, int K, bool transpose_dense_part, cudaStream_t stream, const at::Tensor& B_fp32_cache = at::Tensor());
+void sparse_dense_gemm_hybrid_dense(at::Tensor& out, hybrid_sp_t* A, const at::Tensor& B, int M, int N, int K, cudaStream_t stream);
 void sparse_elementwise(hybrid_sp_t* out, hybrid_sp_t* A, hybrid_sp_t* B, int M, int N, cudaStream_t stream);
-void compute_dU(hybrid_sp_t* dU, hybrid_sp_t* dT, hybrid_sp_t* R, hybrid_sp_t* P, const at::Tensor& acc_init, int M, int N, cudaStream_t stream);
+void compute_dU(hybrid_sp_t* dU, hybrid_sp_t* dT, hybrid_sp_t* R, hybrid_sp_t* P, const at::Tensor& acc_init, int N, cudaStream_t stream);
 void create_hybrid_sparse_from_dense(const at::Tensor& dense, hybrid_sp_t* sp, at::Tensor& l0, at::Tensor& l1, int M, int N, cudaStream_t stream);
 extern int g_ell_width_regular;
 extern int g_ell_width_transpose;
@@ -72,7 +71,6 @@ extern int g_tail_rows_regular;
 extern int g_tail_rows_transpose;
 extern int g_discard_overflow;
 at::Tensor ell_spmm_raw(at::Tensor ell_vals, at::Tensor ell_cols, at::Tensor row_counts, at::Tensor B, int64_t M, int64_t K, int64_t N, int64_t ell_stride, int64_t overflow_threshold);
-void set_ell_create_warps_per_row(int v);
 void set_ell_width_regular(int v);
 void set_ell_width_transpose(int v);
 void set_tail_rows_regular(int v);

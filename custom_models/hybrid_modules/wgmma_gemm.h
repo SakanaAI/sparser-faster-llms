@@ -26,7 +26,6 @@
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>
 #include <cstdint>
-#include "constants.h"
 
 // Populates the dense tail for rows whose true NNZ (written by
 // blocked_ell_to_ell_packed_kernel) exceeded the ELL stride.

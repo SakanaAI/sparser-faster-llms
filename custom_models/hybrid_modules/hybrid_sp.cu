@@ -21,25 +21,13 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-#include <thrust/device_ptr.h>
-#include <thrust/scan.h>
-#include <thrust/execution_policy.h>
-#include <cub/cub.cuh>
 #include <ATen/cuda/CUDAContext.h>
-#include "hybrid_sp.h"
-#include "perf_instrumentation.h"
-
-#include <iostream>
-#include <vector>
-#include <random>
-#include <cassert>
-#include <cmath>
-#include <algorithm>
-#include <numeric>
-#include <unordered_set>
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>
-#include <cuda_runtime_api.h>
+#include <cmath>
+#include "hybrid_sp.h"
+#include "constants.h"
+#include "perf_instrumentation.h"
 
 
 #define ERROR_CHECK 0
@@ -219,9 +207,6 @@ __global__ void gather_rows_by_map_bf16_int4(
         dst[j] = src[j];
     }
 }
-
-#include <cuda_runtime.h>
-#include <cuda_bf16.h>
 
 union OutputPack {
     __nv_bfloat16 bf[8];
@@ -607,25 +592,12 @@ __global__ void populate_overflow_tail_kernel(
     }
 }
 
-// Forward declarations
 template<int WARPS_PER_BLOCK>
 __global__ void dense_to_ell_kernel(
     const __nv_bfloat16* __restrict__, uint16_t* __restrict__,
     __nv_bfloat16* __restrict__, int* __restrict__,
     float* __restrict__, float* __restrict__, int, int, int, int);
 
-template<int WARPS_PER_ROW>
-__global__ void dense_to_ell_mwpr_kernel(
-    const __nv_bfloat16* __restrict__, uint16_t* __restrict__,
-    __nv_bfloat16* __restrict__, int* __restrict__,
-    float* __restrict__, float* __restrict__, int, int, int, int);
-
-
-// WARPS_PER_ROW config for dense_to_ell:
-//   0       = original multi-row-per-block kernel (WARPS_PER_BLOCK=4)
-//   1,2,4,8 = multi-warp-per-row kernel (N warps cooperate on one row)
-static int g_ell_create_warps_per_row = 0;
-void set_ell_create_warps_per_row(int v) { g_ell_create_warps_per_row = v; }
 
 // Per-operation ELL overflow thresholds — these also determine buffer allocation size.
 // Buffer stride = max(regular, transpose) so both ops fit in the same hybrid_sp_t.
@@ -663,22 +635,10 @@ void create_hybrid_sparse_from_dense(
 
     PERF_START("create_hybrid_sparse_from_dense:dense_to_ell", stream);
     const int ell_stride = sp->_ell_stride;
-    if (g_ell_create_warps_per_row == 0) {
-        constexpr int WPB = 4;
-        size_t d2e_smem = (size_t)WPB * ell_stride * (sizeof(uint16_t) + sizeof(__nv_bfloat16));
-        dense_to_ell_kernel<WPB><<<(M + WPB - 1) / WPB, WPB * 32, d2e_smem, stream>>>(
-            d_ptr, e_cols, e_vals, e_rcnt, l0_ptr, l1_ptr, M, N, ell_stride, ell_stride);
-    } else {
-        auto mwpr_smem = [ell_stride](int wpr) -> size_t {
-            return (size_t)wpr * ell_stride * (sizeof(uint16_t) + sizeof(__nv_bfloat16));
-        };
-        switch (g_ell_create_warps_per_row) {
-            case 2: dense_to_ell_mwpr_kernel<2><<<M,  64, mwpr_smem(2), stream>>>(d_ptr, e_cols, e_vals, e_rcnt, l0_ptr, l1_ptr, M, N, ell_stride, ell_stride); break;
-            case 4: dense_to_ell_mwpr_kernel<4><<<M, 128, mwpr_smem(4), stream>>>(d_ptr, e_cols, e_vals, e_rcnt, l0_ptr, l1_ptr, M, N, ell_stride, ell_stride); break;
-            case 8: dense_to_ell_mwpr_kernel<8><<<M, 256, mwpr_smem(8), stream>>>(d_ptr, e_cols, e_vals, e_rcnt, l0_ptr, l1_ptr, M, N, ell_stride, ell_stride); break;
-            default: dense_to_ell_mwpr_kernel<1><<<M,  32, mwpr_smem(1), stream>>>(d_ptr, e_cols, e_vals, e_rcnt, l0_ptr, l1_ptr, M, N, ell_stride, ell_stride); break;
-        }
-    }
+    constexpr int WPB = 4;
+    size_t d2e_smem = (size_t)WPB * ell_stride * (sizeof(uint16_t) + sizeof(__nv_bfloat16));
+    dense_to_ell_kernel<WPB><<<(M + WPB - 1) / WPB, WPB * 32, d2e_smem, stream>>>(
+        d_ptr, e_cols, e_vals, e_rcnt, l0_ptr, l1_ptr, M, N, ell_stride, ell_stride);
     PERF_STOP("create_hybrid_sparse_from_dense:dense_to_ell");
 
 #if ERROR_CHECK
@@ -1047,120 +1007,6 @@ __global__ void dense_to_ell_kernel(
     }
 }
 
-// Same as dense_to_ell_kernel but spreads each row across WARPS_PER_ROW warps
-// for higher utilisation on wide rows; warp-level ballots, then an exclusive
-// prefix sum across warps gives each warp its global ELL slot base.
-template<int WARPS_PER_ROW>
-__global__ void dense_to_ell_mwpr_kernel(
-    const __nv_bfloat16* __restrict__ dense,
-    uint16_t*            __restrict__ ell_cols,
-    __nv_bfloat16*       __restrict__ ell_vals,
-    int*                 __restrict__ row_counts,
-    float*               __restrict__ l0_out,
-    float*               __restrict__ l1_out,
-    int M_rows, int N_cols,
-    int ell_stride,
-    int overflow_threshold
-)
-{
-    const int lane    = threadIdx.x & 31;
-    const int warp_id = threadIdx.x >> 5;   // 0 .. WARPS_PER_ROW-1
-    const int row     = (int)blockIdx.x;
-    if (row >= M_rows) return;
-
-    // Dynamic smem for per-warp col/val staging: [WPR * ell_stride * u16] | [WPR * ell_stride * bf16]
-    // Fixed-size smem for warp metadata stays static.
-    extern __shared__ char _smem_mwpr[];
-    uint16_t*      smem_cols = reinterpret_cast<uint16_t*>(_smem_mwpr);
-    __nv_bfloat16* smem_vals = reinterpret_cast<__nv_bfloat16*>(
-        _smem_mwpr + WARPS_PER_ROW * ell_stride * sizeof(uint16_t));
-    __shared__ int           warp_cnt[WARPS_PER_ROW];
-    __shared__ int           warp_base[WARPS_PER_ROW];
-    __shared__ float         smem_l0[WARPS_PER_ROW], smem_l1[WARPS_PER_ROW];
-
-    const int col_per_warp = (N_cols + WARPS_PER_ROW - 1) / WARPS_PER_ROW;
-    const int col_start    = warp_id * col_per_warp;
-    const int col_end      = min(col_start + col_per_warp, N_cols);
-
-    const __nv_bfloat16* row_ptr = dense + (size_t)row * N_cols;
-    int   write_cnt = 0;
-    int   total_cnt = 0;
-    float l0_acc = 0.f, l1_acc = 0.f;
-
-    for (int base_col = col_start; base_col < col_end; base_col += 32 * VEC_SIZE) {
-        const int lane_base = base_col + lane * VEC_SIZE;
-        const bool in_bounds = (lane_base + VEC_SIZE - 1) < col_end;
-
-        __nv_bfloat16 elems[VEC_SIZE];
-        if (in_bounds)
-            *reinterpret_cast<int4*>(elems) =
-                *reinterpret_cast<const int4*>(row_ptr + lane_base);
-
-        #pragma unroll
-        for (int vi = 0; vi < VEC_SIZE; vi++) {
-            const bool active = in_bounds &&
-                bf16_is_pos_nonzero(__bfloat16_as_ushort(elems[vi]));
-            const uint32_t mask  = __ballot_sync(0xFFFFFFFF, active);
-            const int      count = __popc(mask);
-            const int      rank  = __popc(mask & ((1u << lane) - 1u));
-            if (active) {
-                l0_acc += 1.f / (float)M_rows;
-                l1_acc += __bfloat162float(elems[vi]) / (float)M_rows;
-                const int s = write_cnt + rank;
-                if (s < overflow_threshold) {
-                    smem_cols[warp_id * ell_stride + s] = (uint16_t)(lane_base + vi);
-                    smem_vals[warp_id * ell_stride + s] = elems[vi];
-                }
-            }
-            total_cnt += count;
-            write_cnt += count;
-        }
-    }
-    write_cnt = min(write_cnt, overflow_threshold);
-
-    for (int off = 16; off > 0; off >>= 1) {
-        l0_acc += __shfl_down_sync(0xFFFFFFFF, l0_acc, off);
-        l1_acc += __shfl_down_sync(0xFFFFFFFF, l1_acc, off);
-    }
-    if (lane == 0) {
-        warp_cnt[warp_id] = total_cnt;
-        smem_l0[warp_id]  = l0_acc;
-        smem_l1[warp_id]  = l1_acc;
-    }
-
-    __syncthreads();
-
-    // Warp 0 lane 0 builds the per-warp slot bases via exclusive prefix sum.
-    if (warp_id == 0 && lane == 0) {
-        int base = 0;
-        float gl0 = 0.f, gl1 = 0.f;
-        #pragma unroll
-        for (int w = 0; w < WARPS_PER_ROW; w++) {
-            warp_base[w]  = base;
-            base         += warp_cnt[w];
-            gl0          += smem_l0[w];
-            gl1          += smem_l1[w];
-        }
-        row_counts[row] = base;
-        if (l0_out) atomicAdd(l0_out, gl0);
-        if (l1_out) atomicAdd(l1_out, gl1);
-    }
-
-    __syncthreads();
-
-    const int global_base = warp_base[warp_id];
-    if (global_base < overflow_threshold) {
-        const int allowed      = min(write_cnt, overflow_threshold - global_base);
-        uint16_t*      out_cols = ell_cols + (size_t)row * ell_stride;
-        __nv_bfloat16* out_vals = ell_vals + (size_t)row * ell_stride;
-        for (int k = lane; k < allowed; k += 32) {
-            out_cols[global_base + k] = smem_cols[warp_id * ell_stride + k];
-            out_vals[global_base + k] = smem_vals[warp_id * ell_stride + k];
-        }
-    }
-}
-
-
 __global__ void transpose_hybrid_ell_dense(
     // Input A (hybrid: ELL + overflow-as-dense-rows)
     const uint16_t*      __restrict__ A_ell_cols,
@@ -1438,7 +1284,7 @@ void transpose_hybrid_dense(
 static int op_id = 0;
 #endif
 
-void sparse_dense_gemm_hybrid_dense(at::Tensor& out, hybrid_sp_t* A, const at::Tensor& B, int M, int N, int K, bool transpose_dense_part, cudaStream_t stream, const at::Tensor& B_fp32_cache) {
+void sparse_dense_gemm_hybrid_dense(at::Tensor& out, hybrid_sp_t* A, const at::Tensor& B, int M, int N, int K, cudaStream_t stream) {
     PERF_START("sparse_dense_gemm_total", stream);
 
     // hitRatio = min(1, L2/B) keeps as much of B resident as the cache allows
@@ -1765,7 +1611,7 @@ __global__ void fused_dU_dense_kernel(
 }
 
 void compute_dU(hybrid_sp_t* dU, hybrid_sp_t* dT, hybrid_sp_t* R, hybrid_sp_t* P,
-                const at::Tensor& acc_init, int M, int N, cudaStream_t stream) {
+                const at::Tensor& acc_init, int N, cudaStream_t stream) {
     PERF_START("compute_dU", stream);
 
     // Break aliasing (dU shares storage with T via copy constructor)

@@ -23,13 +23,8 @@
 
 #include "wgmma_gemm.h"
 #include "hybrid_sp.h"
-#include <cuda.h>
-#include <cudaTypedefs.h>
-#include <cuda/barrier>
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>
-#include <cstdio>
-#include <cstdlib>
 #include "perf_instrumentation.h"
 
 // packed.h pulls in Hopper-only declarations and is only safe to include
