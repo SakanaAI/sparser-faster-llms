@@ -43,9 +43,6 @@
 
 
 #define ERROR_CHECK 0
-#define TILE_DIM_X 128       // 128x128 Tiles
-#define TILE_DIM_Y 128       // 128x128 Tiles
-
 
 #define VEC_SIZE 8
 
