@@ -37,7 +37,8 @@ bash scripts/install.sh
 ├── custom_models/
 │   ├── sparse_models.py         # Sparse model definitions
 │   ├── sparse_testing_utils.py  # Sparse -> HF / TwELL conversion helpers
-│   └── twell_modules/           # TwELL CUDA kernels
+│   ├── twell_modules/           # TwELL CUDA kernels
+│   └── hybrid_modules/          # ELL+Dense Hybrid CUDA kernels
 ├── energy_utils.py              # Optional GPU energy measurement helpers
 ├── launch.sh                    # Main multi-GPU training entrypoint
 ├── load_dataset.py              # Dataset loading glue
@@ -51,7 +52,7 @@ bash scripts/install.sh
 
 - [x] Sparse model training code
 - [x] TwELL inference kernels
-- [ ] Efficient TwELL training kernels
+- [x] Efficient Hybrid training kernels
 
 ## Inference Benchmarking
 
@@ -95,10 +96,10 @@ We provide simple functionality using standard PyTorch for Sparse training:
 
 We provide premade Hydra configs to obtain sparse models at different sizes:
 
-- `sparsity_gated_0p5b`
-- `sparsity_gated_1b`
-- `sparsity_gated_1p5b`
-- `sparsity_gated_2b`
+- `sparsity_gated_hybrid_0p5b`
+- `sparsity_gated_hybrid_1b`
+- `sparsity_gated_hybrid_1p5b`
+- `sparsity_gated_hybrid_2b`
 
 For training on H100 GPUs, we recommend the default settings, `zero1` optimization, and no parameter offloading:
 
