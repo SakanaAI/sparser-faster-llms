@@ -84,4 +84,3 @@ State-dict round-trips between HF / sparse / TwELL formats are handled by `_conv
 
 - HF model wrappers (`SparseLlamaForCausalLM`, `SparseQwen2ForCausalLM`), `SparseMLP`, `SparsityTracker`: `../sparse_models.py`.
 - Hybrid-kernel toggle (`sparsity_use_hybrid_kernel`, `sparsity_l0_cutoff`, …): set via Hydra; see the `cfgs/run_cfg/sparsity_gated_hybrid_*.yaml` configs.
-- Standalone trainable module: `hybrid_gated_mlp.HybridGatedMLP`.
