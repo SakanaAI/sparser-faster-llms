@@ -6,7 +6,7 @@
 <p align="center">
   📚 <a href="https://arxiv.org/abs/2603.23198">[Paper]</a> |
   🤗 <a href="https://huggingface.co/collections/SakanaAI/sparser-faster-lighter-transformers">[Checkpoints]</a>
-  🐠 <a href="https://pub.sakana.ai/sparser-faster-llms">[Blog (coming soon)]</a>
+  🐠 <a href="https://pub.sakana.ai/sparser-faster-llms">[Blog]</a>
 </p>
 
 This repository contains the reference code for the paper **Sparser, Faster, Lighter Transformer Language Models**. It includes sparse training code and our custom CUDA kernels designed for H100 GPUs for sparse models, leveraging the TwELL packing format.
