@@ -174,6 +174,12 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> ff_backward_cuda_gate
     R->_dense_active_rows = v;
     P->_dense_active_rows = v;
     T->_dense_active_rows = v;
+    // The device-side overflow_counter was atomically bumped without a cap, so
+    // it can exceed tail_cap when sparsity is low. transpose_hybrid_ell_dense
+    // uses *overflow_counter to bound its iteration over tail_dense_map_reverse
+    // (sized tail_cap); without this fill we read OOB and segfault. R/T/dR/dU
+    // share this tensor via the copy constructor, so one write fixes all reads.
+    P->_overflow_counter.fill_(v);
     hybrid_sp_t T_t(n, m, X.device(), g_ell_width_transpose, g_tail_rows_transpose);
     PERF_START("transpose1_T", stream);
     transpose_hybrid_dense(*T, T_t, m, n, stream);
@@ -247,6 +253,9 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> ff_backward_cuda_gate
     dR_t._dense_active_rows = v;
     dU_t._dense_active_rows = v;
     T_t._dense_active_rows = v;
+    // Same hazard as P->_overflow_counter above: cap the device counter before
+    // anything else iterates over T_t's tail_dense_map_reverse.
+    T_t._overflow_counter.fill_(v);
     PERF_START("gemm_dR_t_X", stream);
     sparse_dense_gemm_hybrid_dense(dK, &dR_t, X, n, k, m, stream);
     PERF_STOP("gemm_dR_t_X");
