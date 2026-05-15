@@ -308,7 +308,7 @@ class SparseMLP(nn.Module):
         # so we transpose it once at construction (HF default is [hidden,
         # intermediate]). Adaptive auto-switching can flip _use_fast at runtime.
         self._use_hybrid_kernel = bool(use_hybrid_kernel) and gated
-        self._use_fast = self._use_hybrid_kernel
+        self._use_fast = False  # Disabled by default
         if self._use_hybrid_kernel:
             from custom_models.hybrid_modules.sparse_ops_loader import (
                 load_sparse_ops,

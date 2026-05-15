@@ -602,7 +602,7 @@ __global__ void dense_to_ell_kernel(
 // Per-operation ELL overflow thresholds — these also determine buffer allocation size.
 // Buffer stride = max(regular, transpose) so both ops fit in the same hybrid_sp_t.
 int g_ell_width_regular   = ELL_WIDTH;
-int g_ell_width_transpose = ELL_WIDTH;
+int g_ell_width_transpose = 2 * ELL_WIDTH;
 // Per-operation dense tail capacity — buffer size = max(regular, transpose).
 int g_tail_rows_regular   = TAIL_CAPACITY_ROWS;
 int g_tail_rows_transpose = TAIL_CAPACITY_ROWS;
@@ -610,7 +610,7 @@ int g_tail_rows_transpose = TAIL_CAPACITY_ROWS;
 int g_discard_overflow    = 0;
 
 void set_ell_width_regular(int v)   { g_ell_width_regular   = (v > 0) ? v : ELL_WIDTH; }
-void set_ell_width_transpose(int v) { g_ell_width_transpose = (v > 0) ? v : ELL_WIDTH; }
+void set_ell_width_transpose(int v) { g_ell_width_transpose = (v > 0) ? v : 2 * ELL_WIDTH; }
 void set_tail_rows_regular(int v)   { g_tail_rows_regular   = (v > 0) ? v : TAIL_CAPACITY_ROWS; }
 void set_tail_rows_transpose(int v) { g_tail_rows_transpose = (v > 0) ? v : TAIL_CAPACITY_ROWS; }
 void set_discard_overflow(int v)    { g_discard_overflow    = v; }
