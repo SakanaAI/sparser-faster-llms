@@ -628,17 +628,11 @@ class SparseModelForCausalLM(abc.ABC):
         collect_stats: bool = False,
         **kwargs,
     ):
-        if (labels is not None or collect_stats) and not self.baseline_run:
-            assert self.mlp_execution_logic == "training", (
-                "Can only collect sparsity statistics and L1 loss during when "
-                "the execution logic is set to 'training'."
-            )
-            self.tracker.start_forward_pass()
-
         # Adaptive per-layer kernel switch: when l0_cutoff > 0, every
         # l0_cutoff_period steps walk the layers and route those whose last
         # measured L0 fell below the cutoff through the hybrid kernel; the
         # rest stay on the einsum path (which keeps dead-neuron tracking live).
+        # use the previous iteration values to avoid gradient checkpointing issues
         if self.use_hybrid_kernel and self.l0_cutoff > 0:
             self._iter += 1
             if self._iter % self.l0_cutoff_period == 0:
@@ -647,6 +641,13 @@ class SparseModelForCausalLM(abc.ABC):
                         layer.mlp.enable_fast(
                             float(self.tracker._l0_per_layer[i]) < self.l0_cutoff
                         )
+
+        if (labels is not None or collect_stats) and not self.baseline_run:
+            assert self.mlp_execution_logic == "training", (
+                "Can only collect sparsity statistics and L1 loss during when "
+                "the execution logic is set to 'training'."
+            )
+            self.tracker.start_forward_pass()
 
         output: CausalLMOutputWithPast = super().forward(
             input_ids=input_ids,
@@ -661,6 +662,7 @@ class SparseModelForCausalLM(abc.ABC):
             cache_position=cache_position,
             **kwargs,
         )
+
         if self.baseline_run:
             return output
 

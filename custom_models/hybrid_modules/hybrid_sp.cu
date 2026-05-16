@@ -663,6 +663,14 @@ void create_hybrid_sparse_from_dense(
         g_tail_rows_regular,
         g_discard_overflow
     );
+#if ERROR_CHECK
+    __err = cudaDeviceSynchronize();
+    if (__err != cudaSuccess) {
+        fprintf(stderr, "dense_to_ell: Fatal error: (%s at %s:%d)\n",
+                cudaGetErrorString(__err), __FILE__, __LINE__);
+        TORCH_CHECK(false, "error in populate_overflow_tail");
+    }
+#endif
     PERF_STOP("create_hybrid_sparse_from_dense:overflow_tail");
 
     PERF_STOP("create_hybrid_sparse_from_dense:total");
@@ -1036,13 +1044,14 @@ __global__ void transpose_hybrid_ell_dense(
     int                  tail_cap,
     int                  discard
 ) {
-    // Phase 1: transpose ELL entries of non-overflow rows. Overflow rows
-    // (nnz > ell_w) were materialised into A_tail_dense in their entirety,
-    // so their ELL portion is intentionally skipped here.
+    // Phase 1: transpose ELL entries of non-overflow rows. Rows whose true NNZ
+    // exceeded the input's ELL stride were materialised into A_tail_dense in
+    // their entirety (Phase 2 handles them); their ELL data here is a truncated
+    // copy and reading past in_ell_stride would be out-of-bounds.
     for (int row = blockIdx.x; row < M_rows; row += gridDim.x) {
         int nnz_row = A_row_counts[row];
         if (nnz_row <= 0) continue;
-        if (nnz_row > ell_w) continue;
+        if (nnz_row > in_ell_stride) continue;
 
         const int ell_n = nnz_row;
 
