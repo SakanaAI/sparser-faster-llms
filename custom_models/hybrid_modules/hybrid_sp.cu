@@ -550,12 +550,21 @@ hybrid_sp_t::hybrid_sp_t(const hybrid_sp_t& sp) {
 }
 
 hybrid_sp_t::~hybrid_sp_t() {
-    // Reclaim the CUDA event allocated by the forward op when this object is
-    // released without backward ever running (eval/inference, autograd skip,
-    // or any path where ff_backward_cuda_gated didn't fire). When backward
-    // does run, it destroys the event itself and nulls the handle, so this
-    // is a no-op for the normal training path.
+    // Reached when this object is released without backward consuming it:
+    //   - eval / no_grad inference
+    //   - the no_grad forward pass under gradient checkpointing (recomputed
+    //     with autograd later, but THIS instance is dropped immediately)
+    // The forward op enqueued a cudaMemcpyAsync from overflow_counter -> hN
+    // (pinned host memory) and recorded the event. We must wait for that copy
+    // to complete before allowing hN's pinned buffer to be reclaimed by
+    // PyTorch's host allocator; otherwise the async write lands in whatever
+    // pinned allocation reuses the slot next, corrupting memory and surfacing
+    // later as a launch failure / illegal memory access in an unrelated kernel.
+    //
+    // When ff_backward_cuda_gated runs it destroys the event itself and nulls
+    // the handle, so this branch is a no-op on the normal training path.
     if (_counter_copy_ev != nullptr) {
+        cudaEventSynchronize(_counter_copy_ev);
         cudaEventDestroy(_counter_copy_ev);
         _counter_copy_ev = nullptr;
     }
