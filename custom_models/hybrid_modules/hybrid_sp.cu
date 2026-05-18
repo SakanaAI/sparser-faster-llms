@@ -78,10 +78,16 @@ __forceinline__ __device__ void populate_dense(
     }
 
     if (dr == -2) {
-        while (dr == -2) {
+        // Bounded spin while the CAS winner finishes its atomicAdd + atomicExch
+        // (handful of instructions). If we don't see a publication after the
+        // budget elapses, treat the result as if the cap was exhausted: silently
+        // drop the write rather than spinning forever and tripping the kernel
+        // watchdog -> cudaErrorLaunchFailure.
+        int spin_budget = 4096;
+        while (dr == -2 && spin_budget-- > 0) {
             dr = atomic_read_i32(&tail_dense_map[g_row]);
         }
-        if (dr < 0 || dr >= tail_cap) {
+        if (dr == -2 || dr < 0 || dr >= tail_cap) {
             return;
         }
     }
@@ -538,6 +544,21 @@ hybrid_sp_t::hybrid_sp_t(const hybrid_sp_t& sp) {
     this->_dense_active_rows = sp._dense_active_rows;
     this->_ell_stride = sp._ell_stride;
     this->_tail_cap   = sp._tail_cap;
+    // Don't take ownership of the source's CUDA event: only the original
+    // (the one populated by the forward op) is responsible for destroying it.
+    this->_counter_copy_ev = nullptr;
+}
+
+hybrid_sp_t::~hybrid_sp_t() {
+    // Reclaim the CUDA event allocated by the forward op when this object is
+    // released without backward ever running (eval/inference, autograd skip,
+    // or any path where ff_backward_cuda_gated didn't fire). When backward
+    // does run, it destroys the event itself and nulls the handle, so this
+    // is a no-op for the normal training path.
+    if (_counter_copy_ev != nullptr) {
+        cudaEventDestroy(_counter_copy_ev);
+        _counter_copy_ev = nullptr;
+    }
 }
 
 void hybrid_sp_t::reset_vals() {

@@ -37,7 +37,7 @@ struct hybrid_sp_t : torch::CustomClassHolder {
     at::Tensor _tail_dense;
     at::Tensor _tail_dense_map;
     at::Tensor _tail_dense_map_reverse;
-    cudaEvent_t _counter_copy_ev;
+    cudaEvent_t _counter_copy_ev = nullptr;
     at::Tensor hN;
     int _dense_active_rows;
     int _ell_stride;
@@ -46,6 +46,7 @@ struct hybrid_sp_t : torch::CustomClassHolder {
     hybrid_sp_t(int M, int N, torch::Device device);
     hybrid_sp_t(int M, int N, torch::Device device, int ell_w, int tcap);
     hybrid_sp_t(const hybrid_sp_t& sp);
+    ~hybrid_sp_t();
     void reset_vals();
 
     inline uint16_t* ell_col_indices() const {return static_cast<uint16_t*>(_ell_col_indices.data_ptr());}

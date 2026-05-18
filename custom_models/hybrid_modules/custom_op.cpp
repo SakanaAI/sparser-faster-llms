@@ -270,6 +270,9 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> ff_backward_cuda_gate
     g_last_transpose_overflow_counter = T_t._overflow_counter;
     cudaError_t err3 = cudaEventDestroy(P->_counter_copy_ev);
     TORCH_CHECK(err3 == cudaSuccess, "cudaEventDestroy failed: ", cudaGetErrorString(err3));
+    // Null the handle so ~hybrid_sp_t() (the eval/no-backward fallback path)
+    // doesn't try to destroy it again when P/R/T eventually go out of scope.
+    P->_counter_copy_ev = nullptr;
     err3 = cudaEventDestroy(ev);
     TORCH_CHECK(err3 == cudaSuccess, "cudaEventDestroy failed: ", cudaGetErrorString(err3));
     PERF_STOP("ff_backward_gated_total");
