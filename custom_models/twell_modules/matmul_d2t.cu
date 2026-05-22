@@ -666,10 +666,6 @@ void mm_wgmma_nt_kernel(
                                     }
                                     else
                                     {
-                                        // Cap at buffer capacity to prevent smem overflow.
-                                        // c_packed has T_n_compressed + PADDING(=4) slots per row.
-                                        // Slot 0 is the counter, slots 1..T_n_compressed+3 are data.
-                                        if (current_store_idx >= T_n_compressed + 3u) continue;
                                         tiles_s.c_packed[quadrant_store_offset_m][current_store_idx + 1] =
                                         tile_coord_n * T_n + quadrant_store_offset_n + quadrant_slice_n * 2 + element_n |
                                         (
