@@ -73,7 +73,6 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, HybridSpPtr, HybridSpPtr, HybridS
         P->row_counters(),
         reinterpret_cast<uint32_t*>(bwell_packed_ws.data_ptr()),
         static_cast<float*>(l0.data_ptr()),
-        static_cast<float*>(l1.data_ptr()),
         stream.stream());
 
     if (fused_ok) {
@@ -97,7 +96,7 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, HybridSpPtr, HybridSpPtr, HybridS
         }
     } else {
         at::Tensor L = torch::einsum("bmn,kn->bmk", {X, G});
-        create_hybrid_sparse_from_dense(L, P.get(), l0, l1, m, n, stream);
+        create_hybrid_sparse_from_dense(L, P.get(), l0, m, n, stream);
     }
 
     PERF_STOP("wgmma_gate_gemm");
@@ -130,7 +129,7 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, HybridSpPtr, HybridSpPtr, HybridS
     P->_dense_active_rows = (g_discard_overflow == 1 ? 0 : P->_tail_cap);
     T->_dense_active_rows = (g_discard_overflow == 1 ? 0 : P->_tail_cap);
     new_product_as_sparse_sma(R.get(), X, K, acc_init, m, n, k, stream);
-    sparse_elementwise(T.get(), R.get(), P.get(), m, n, stream);
+    sparse_elementwise(T.get(), R.get(), P.get(), m, n, stream, &l1);
     sparse_dense_gemm_hybrid_dense(out2, T.get(), V, m, k, n, stream);
 
     PERF_STOP("ff_forward_gated_total");
@@ -208,15 +207,18 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> ff_backward_cuda_gate
     PERF_START("as_sparse_dT", stream);
     new_product_as_sparse_sma(&dT, gR, V, acc_init, m, n, k, stream);
     PERF_STOP("as_sparse_dT");
-    hybrid_sp_t dR(*T);
 
+    // Bake the L1 = sum|T|/M gradient into dT so dR = dT*P and dU = dT*R
+    // pick up the |.|-derivative for free.
+    shift_dT_for_l1(&dT, R.get(), gl1, m, n, stream);
+
+    hybrid_sp_t dR(*T);
     dR.reset_vals();
     PERF_START("elemwise_dR", stream);
     sparse_elementwise(&dR, &dT, P.get(),  m, n, stream);
     PERF_STOP("elemwise_dR");
 
     hybrid_sp_t dU(*T);
-    acc_init = gl1 * (1.0f / m);
     compute_dU(&dU, &dT, R.get(), P.get(), acc_init, n, stream);
 
     hybrid_sp_t dR_t(n, m, X.device(), g_ell_width_transpose, g_tail_rows_transpose);

@@ -52,5 +52,4 @@ bool wgmma_gate_gemm_to_ell_packed(
     int32_t*         row_nnz,
     uint32_t*        C_packed,
     float*           l0_out,
-    float*           l1_out,
     cudaStream_t stream);

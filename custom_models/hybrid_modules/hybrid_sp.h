@@ -63,9 +63,11 @@ struct hybrid_sp_t : torch::CustomClassHolder {
 void new_product_as_sparse_sma(hybrid_sp_t* out, at::Tensor const& a, at::Tensor const& b, at::Tensor const& init_val, int M, int N, int K, cudaStream_t stream);
 void transpose_hybrid_dense(const hybrid_sp_t& A, hybrid_sp_t& AT, int M_rows, int N_cols, cudaStream_t stream, const int* precomputed_tail_dense_map = nullptr, const int* precomputed_tail_dense_map_reverse = nullptr);
 void sparse_dense_gemm_hybrid_dense(at::Tensor& out, hybrid_sp_t* A, const at::Tensor& B, int M, int N, int K, cudaStream_t stream);
-void sparse_elementwise(hybrid_sp_t* out, hybrid_sp_t* A, hybrid_sp_t* B, int M, int N, cudaStream_t stream);
+// l1_out, when non-null, receives sum |out_ij| / M.
+void sparse_elementwise(hybrid_sp_t* out, hybrid_sp_t* A, hybrid_sp_t* B, int M, int N, cudaStream_t stream, at::Tensor* l1_out = nullptr);
+void shift_dT_for_l1(hybrid_sp_t* dT, hybrid_sp_t* R, const at::Tensor& gl1, int M, int N, cudaStream_t stream);
 void compute_dU(hybrid_sp_t* dU, hybrid_sp_t* dT, hybrid_sp_t* R, hybrid_sp_t* P, const at::Tensor& acc_init, int N, cudaStream_t stream);
-void create_hybrid_sparse_from_dense(const at::Tensor& dense, hybrid_sp_t* sp, at::Tensor& l0, at::Tensor& l1, int M, int N, cudaStream_t stream);
+void create_hybrid_sparse_from_dense(const at::Tensor& dense, hybrid_sp_t* sp, at::Tensor& l0, int M, int N, cudaStream_t stream);
 extern int g_ell_width_regular;
 extern int g_ell_width_transpose;
 extern int g_tail_rows_regular;

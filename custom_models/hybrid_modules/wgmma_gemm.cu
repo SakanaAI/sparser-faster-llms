@@ -43,7 +43,6 @@ __global__ void blocked_ell_to_ell_packed_kernel(
     int16_t*             __restrict__ ell_col,
     int32_t*             __restrict__ row_nnz,
     float*               __restrict__ l0_out,
-    float*               __restrict__ l1_out,
     int M, int N_TILES, int T_n_comp, int ELL_W)
 {
     const int row = (int)(blockIdx.x * blockDim.y + threadIdx.y);
@@ -65,14 +64,10 @@ __global__ void blocked_ell_to_ell_packed_kernel(
     // total is the true NNZ; do NOT cap it so overflow rows can be detected.
     int total = __shfl_sync(0xFFFFFFFF, offset, min(N_TILES - 1, 31));
 
-    float l0_acc = 0.0f, l1_acc = 0.0f;
+    float l0_acc = 0.0f;
     if (l0_out && cnt > 0) {
         const float inv_M = 1.0f / (float)M;
         l0_acc = (float)cnt * inv_M;
-        for (int i = 0; i < cnt; i++) {
-            __nv_bfloat16 v = __ushort_as_bfloat16((unsigned short)(tile_ptr[i + 1] >> 16));
-            l1_acc += __bfloat162float(v) * inv_M;
-        }
     }
 
     if (cnt > 0 && start < ELL_W) {
@@ -90,12 +85,8 @@ __global__ void blocked_ell_to_ell_packed_kernel(
     if (l0_out) {
         for (int s = 16; s > 0; s >>= 1) {
             l0_acc += __shfl_down_sync(0xFFFFFFFF, l0_acc, s);
-            l1_acc += __shfl_down_sync(0xFFFFFFFF, l1_acc, s);
         }
-        if (tid == 0) {
-            atomicAdd(l0_out, l0_acc);
-            atomicAdd(l1_out, l1_acc);
-        }
+        if (tid == 0) atomicAdd(l0_out, l0_acc);
     }
 }
 
@@ -178,7 +169,6 @@ bool wgmma_gate_gemm_to_ell_packed(
     int32_t*         row_nnz,
     uint32_t*        C_packed,
     float*           l0_out,
-    float*           l1_out,
     cudaStream_t stream)
 {
     // __CUDA_ARCH_LIST__ is auto-set by nvcc (CUDA 12+) on both host and device passes.
@@ -209,9 +199,6 @@ bool wgmma_gate_gemm_to_ell_packed(
         C_packed, M, K, N, stream);
     PERF_STOP("mmwgmma");
 
-    if ((l0_out == nullptr) != (l1_out == nullptr) || (l0_out != nullptr && l0_out == l1_out)) {
-        TORCH_CHECK(false, "l0_out and l1_out must be distinct pointers or both null");
-    }
     constexpr int ROWS_PER_BLOCK = 4;
     dim3 conv_block(32, ROWS_PER_BLOCK);
     dim3 conv_grid((M + ROWS_PER_BLOCK - 1) / ROWS_PER_BLOCK);
@@ -219,7 +206,7 @@ bool wgmma_gate_gemm_to_ell_packed(
     blocked_ell_to_ell_packed_kernel<<<conv_grid, conv_block, 0, stream>>>(
         C_packed,
         ell_val, reinterpret_cast<int16_t*>(ell_col), row_nnz,
-        l0_out, l1_out,
+        l0_out,
         M, N_TILES, T_n_comp, g_ell_width_regular);
     PERF_STOP("bell_to_ell");
 

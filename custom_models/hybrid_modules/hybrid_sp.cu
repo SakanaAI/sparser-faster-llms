@@ -626,7 +626,7 @@ template<int WARPS_PER_BLOCK>
 __global__ void dense_to_ell_kernel(
     const __nv_bfloat16* __restrict__, uint16_t* __restrict__,
     __nv_bfloat16* __restrict__, int* __restrict__,
-    float* __restrict__, float* __restrict__, int, int, int, int);
+    float* __restrict__, int, int, int, int);
 
 
 // Per-operation ELL overflow thresholds — these also determine buffer allocation size.
@@ -650,7 +650,7 @@ void set_discard_overflow(int v)    { g_discard_overflow    = v; }
 void create_hybrid_sparse_from_dense(
     const at::Tensor& dense,
     hybrid_sp_t* sp,
-    at::Tensor& l0, at::Tensor& l1,
+    at::Tensor& l0,
     int M, int N,
     cudaStream_t stream)
 {
@@ -661,14 +661,13 @@ void create_hybrid_sparse_from_dense(
     auto*       e_vals  = sp->ell_values();
     auto*       e_rcnt  = sp->row_counters();
     auto*       l0_ptr  = l0.defined() ? static_cast<float*>(l0.data_ptr()) : nullptr;
-    auto*       l1_ptr  = l1.defined() ? static_cast<float*>(l1.data_ptr()) : nullptr;
 
     PERF_START("create_hybrid_sparse_from_dense:dense_to_ell", stream);
     const int ell_stride = sp->_ell_stride;
     constexpr int WPB = 4;
     size_t d2e_smem = (size_t)WPB * ell_stride * (sizeof(uint16_t) + sizeof(__nv_bfloat16));
     dense_to_ell_kernel<WPB><<<(M + WPB - 1) / WPB, WPB * 32, d2e_smem, stream>>>(
-        d_ptr, e_cols, e_vals, e_rcnt, l0_ptr, l1_ptr, M, N, ell_stride, ell_stride);
+        d_ptr, e_cols, e_vals, e_rcnt, l0_ptr, M, N, ell_stride, ell_stride);
     PERF_STOP("create_hybrid_sparse_from_dense:dense_to_ell");
 
 #if ERROR_CHECK
@@ -970,7 +969,6 @@ __global__ void dense_to_ell_kernel(
     __nv_bfloat16*       __restrict__ ell_vals,
     int*                 __restrict__ row_counts,
     float*               __restrict__ l0_out,
-    float*               __restrict__ l1_out,
     int M_rows, int N_cols,
     int ell_stride,
     int overflow_threshold
@@ -991,7 +989,6 @@ __global__ void dense_to_ell_kernel(
     const __nv_bfloat16* row_ptr = dense + (size_t)row * N_cols;
     int   slot_cnt = 0;
     float l0_acc   = 0.0f;
-    float l1_acc   = 0.0f;
 
     for (int base_col = 0; base_col < N_cols; base_col += 32 * VEC_SIZE) {
         const int lane_base = base_col + lane * VEC_SIZE;
@@ -1014,7 +1011,6 @@ __global__ void dense_to_ell_kernel(
 
             if (active) {
                 l0_acc += 1.0f / (float)M_rows;
-                l1_acc += __bfloat162float(elems[vi]) / (float)M_rows;
                 const int s = slot_cnt + rank;
                 if (s < overflow_threshold) {
                     smem_cols[warp_id * ell_stride + s] = (uint16_t)(lane_base + vi);
@@ -1027,7 +1023,6 @@ __global__ void dense_to_ell_kernel(
 
     for (int offset = 16; offset > 0; offset >>= 1) {
         l0_acc += __shfl_down_sync(0xFFFFFFFF, l0_acc, offset);
-        l1_acc += __shfl_down_sync(0xFFFFFFFF, l1_acc, offset);
     }
 
     const int actual_nnz = (slot_cnt < overflow_threshold) ? slot_cnt : overflow_threshold;
@@ -1041,7 +1036,6 @@ __global__ void dense_to_ell_kernel(
     if (lane == 0) {
         row_counts[row] = slot_cnt;
         if (l0_out) atomicAdd(l0_out, l0_acc);
-        if (l1_out) atomicAdd(l1_out, l1_acc);
     }
 }
 
@@ -1496,6 +1490,7 @@ __global__ void sparse_elementwise_product(
     int M,
     int N,
     const float* __restrict__ acc_init,
+    float*       __restrict__ l1_out,
     int ell_stride,
     int overflow_threshold
 ) {
@@ -1511,6 +1506,7 @@ __global__ void sparse_elementwise_product(
     if (nnz_total <= 0) return;
 
     float init = acc_init ? *acc_init : 0.0f;
+    float l1_acc = 0.0f;
 
     if (nnz_total <= overflow_threshold) {
         // ELL-only row.
@@ -1534,41 +1530,59 @@ __global__ void sparse_elementwise_product(
             #pragma unroll
             for (int t = 0; t < 4; ++t) {
                 o2[t] = a2[t] * b2[t] + init2;
+                if (l1_out) {
+                    // Padding past nnz_total is uninitialised; mask it out.
+                    float2 pf = __bfloat1622float2(__habs2(o2[t]));
+                    int pos_x = base + 2 * t;
+                    if (pos_x     < nnz_total) l1_acc += pf.x;
+                    if (pos_x + 1 < nnz_total) l1_acc += pf.y;
+                }
             }
 
             *reinterpret_cast<int4*>(o_row + base) = o_raw;
         }
-        return;
+    } else {
+        // Dense-tail row.
+        int dr = tail_dense_map[row];
+        if (dr >= 0) {
+            const __nv_bfloat16* a_row = A_dense   + (size_t)dr * N;
+            const __nv_bfloat16* b_row = B_dense   + (size_t)dr * N;
+            __nv_bfloat16*       o_row = out_dense + (size_t)dr * N;
+
+            for (int base = lane * VEC; base < N; base += 32 * VEC) {
+                const int4 a_raw = *reinterpret_cast<const int4*>(a_row + base);
+                const int4 b_raw = *reinterpret_cast<const int4*>(b_row + base);
+
+                if (int4_all_zero(a_raw) || int4_all_zero(b_raw)) {
+                    *reinterpret_cast<int4*>(o_row + base) = make_int4(0, 0, 0, 0);
+                    continue;
+                }
+
+                int4 o_raw;
+                const __nv_bfloat162* a2 = reinterpret_cast<const __nv_bfloat162*>(&a_raw);
+                const __nv_bfloat162* b2 = reinterpret_cast<const __nv_bfloat162*>(&b_raw);
+                __nv_bfloat162* o2       = reinterpret_cast<__nv_bfloat162*>(&o_raw);
+                __nv_bfloat162 init2      = __bfloat162bfloat162(__float2bfloat16(init));
+
+                #pragma unroll
+                for (int t = 0; t < 4; ++t) {
+                    o2[t] = a2[t] * b2[t] + init2;
+                    if (l1_out) {
+                        float2 pf = __bfloat1622float2(__habs2(o2[t]));
+                        l1_acc += pf.x + pf.y;
+                    }
+                }
+
+                *reinterpret_cast<int4*>(o_row + base) = o_raw;
+            }
+        }
     }
 
-    // Dense-tail row.
-    int dr = tail_dense_map[row];
-    if (dr < 0) return;
-    const __nv_bfloat16* a_row = A_dense   + (size_t)dr * N;
-    const __nv_bfloat16* b_row = B_dense   + (size_t)dr * N;
-    __nv_bfloat16*       o_row = out_dense + (size_t)dr * N;
-
-    for (int base = lane * VEC; base < N; base += 32 * VEC) {
-        const int4 a_raw = *reinterpret_cast<const int4*>(a_row + base);
-        const int4 b_raw = *reinterpret_cast<const int4*>(b_row + base);
-
-        if (int4_all_zero(a_raw) || int4_all_zero(b_raw)) {
-            *reinterpret_cast<int4*>(o_row + base) = make_int4(0, 0, 0, 0);
-            continue;
+    if (l1_out) {
+        for (int s = 16; s > 0; s >>= 1) {
+            l1_acc += __shfl_down_sync(0xFFFFFFFF, l1_acc, s);
         }
-
-        int4 o_raw;
-        const __nv_bfloat162* a2 = reinterpret_cast<const __nv_bfloat162*>(&a_raw);
-        const __nv_bfloat162* b2 = reinterpret_cast<const __nv_bfloat162*>(&b_raw);
-        __nv_bfloat162* o2       = reinterpret_cast<__nv_bfloat162*>(&o_raw);
-        __nv_bfloat162 init2      = __bfloat162bfloat162(__float2bfloat16(init));
-
-        #pragma unroll
-        for (int t = 0; t < 4; ++t) {
-            o2[t] = a2[t] * b2[t] + init2;
-        }
-
-        *reinterpret_cast<int4*>(o_row + base) = o_raw;
+        if (lane == 0) atomicAdd(l1_out, l1_acc * (1.0f / (float)M));
     }
 }
 
@@ -1692,7 +1706,7 @@ void compute_dU(hybrid_sp_t* dU, hybrid_sp_t* dT, hybrid_sp_t* R, hybrid_sp_t* P
     PERF_STOP("compute_dU");
 }
 
-void sparse_elementwise(hybrid_sp_t* out, hybrid_sp_t* A, hybrid_sp_t* B, int M, int N, cudaStream_t stream) {
+void sparse_elementwise(hybrid_sp_t* out, hybrid_sp_t* A, hybrid_sp_t* B, int M, int N, cudaStream_t stream, at::Tensor* l1_out) {
     PERF_START("sparse_elementwise", stream);
 
     constexpr int THREADS = 128;
@@ -1705,6 +1719,8 @@ void sparse_elementwise(hybrid_sp_t* out, hybrid_sp_t* A, hybrid_sp_t* B, int M,
     if (out->_dense_active_rows > 0) {
         out->_tail_dense = torch::empty_like(out->_tail_dense);
     }
+    float* l1_ptr = (l1_out && l1_out->defined())
+                    ? static_cast<float*>(l1_out->data_ptr()) : nullptr;
     sparse_elementwise_product<<<grid, block, 0, stream>>>(
         out->ell_values(),
         out->tail_dense(),
@@ -1718,6 +1734,7 @@ void sparse_elementwise(hybrid_sp_t* out, hybrid_sp_t* A, hybrid_sp_t* B, int M,
         M,
         N,
         nullptr,
+        l1_ptr,
         A->_ell_stride,
         A->_ell_stride
     );
@@ -1730,5 +1747,65 @@ void sparse_elementwise(hybrid_sp_t* out, hybrid_sp_t* A, hybrid_sp_t* B, int M,
 #endif
 
     PERF_STOP("sparse_elementwise");
+}
+
+// dT' = dT + (gl1/M) * sign(R). Lets the downstream dT*P and dT*R kernels
+// produce the L1 contribution to dR and dP without a separate pass.
+__global__ void shift_dT_for_l1_ell_kernel(
+    __nv_bfloat16*       __restrict__ dT,
+    const __nv_bfloat16* __restrict__ R,
+    const float*         __restrict__ init_ptr,
+    int total_elements
+) {
+    constexpr int VEC = 8;
+    float init = init_ptr ? *init_ptr : 0.0f;
+    int idx = (blockIdx.x * blockDim.x + threadIdx.x) * VEC;
+    if (idx >= total_elements) return;
+
+    int4 dt_raw = *reinterpret_cast<const int4*>(dT + idx);
+    int4 r_raw  = *reinterpret_cast<const int4*>(R  + idx);
+    __nv_bfloat16*       dt8 = reinterpret_cast<__nv_bfloat16*>(&dt_raw);
+    const __nv_bfloat16* r8  = reinterpret_cast<const __nv_bfloat16*>(&r_raw);
+
+    #pragma unroll
+    for (int i = 0; i < VEC; ++i) {
+        float r_f = __bfloat162float(r8[i]);
+        float s = (r_f > 0.0f) ? 1.0f : (r_f < 0.0f ? -1.0f : 0.0f);
+        float v = __bfloat162float(dt8[i]) + init * s;
+        dt8[i] = __float2bfloat16(v);
+    }
+
+    *reinterpret_cast<int4*>(dT + idx) = dt_raw;
+}
+
+void shift_dT_for_l1(hybrid_sp_t* dT, hybrid_sp_t* R, const at::Tensor& gl1, int M, int N, cudaStream_t stream) {
+    PERF_START("shift_dT_for_l1", stream);
+    at::Tensor init = gl1 * (1.0f / (float)M);
+    const float* init_ptr = static_cast<const float*>(init.data_ptr());
+
+    constexpr int VEC = 8;
+    constexpr int THREADS = 256;
+
+    int ell_total = (int)dT->_ell_values.numel();
+    int ell_blocks = (ell_total / VEC + THREADS - 1) / THREADS;
+    shift_dT_for_l1_ell_kernel<<<ell_blocks, THREADS, 0, stream>>>(
+        dT->ell_values(),
+        R->ell_values(),
+        init_ptr,
+        ell_total
+    );
+
+    int dar = dT->_dense_active_rows;
+    if (dar > 0) {
+        int tail_total = dar * N;
+        int tail_blocks = (tail_total / VEC + THREADS - 1) / THREADS;
+        shift_dT_for_l1_ell_kernel<<<tail_blocks, THREADS, 0, stream>>>(
+            dT->tail_dense(),
+            R->tail_dense(),
+            init_ptr,
+            tail_total
+        );
+    }
+    PERF_STOP("shift_dT_for_l1");
 }
 
