@@ -30,7 +30,6 @@ When `SPARSE_OPS_PREBUILT` is set, the loader skips JIT and calls `torch.ops.loa
 | Var | Purpose |
 |---|---|
 | `SPARSE_OPS_PREBUILT` | Full path to a prebuilt `sparse_ops.so`. Skips JIT compilation. |
-| `SPARSE_ENABLE_PERF_PROFILING` | `1` to enable per-kernel CUDA-event profiling. |
 | `TORCH_CUDA_ARCH_LIST` | Standard PyTorch arch list. Default `9.0a`. |
 
 ## Quick start
@@ -41,6 +40,8 @@ from sparse_ops_loader import load_sparse_ops
 load_sparse_ops()
 
 B_S, D, H = 16384, 2048, 5632
+
+# This is illustrative, matrices should be created such that Relu(X@G) is sparse
 X = torch.randn(B_S, D, dtype=torch.bfloat16, device="cuda", requires_grad=True)
 G = torch.randn(H, D, dtype=torch.bfloat16, device="cuda", requires_grad=True)
 K = torch.randn(H, D, dtype=torch.bfloat16, device="cuda", requires_grad=True)
@@ -54,17 +55,13 @@ out, l0, l1, _, _, _ = torch.ops.sparse_ops.ff_forward_gated(X, G, K, V)
 - `l0`, `l1` are scalar aux losses — fold into the training loss as needed.
 - The trailing `(P, R, T)` are opaque `HybridSp` saved-state for backward; ignore.
 
-For real (highly sparse) gates, see `benchmark_llm.py`. With random `G` the gate isn't sparse and `Relu(X @ G^T)` overflows the ELL buffer.
-
 ## Public ops
 
 | Op | Purpose |
 |---|---|
 | `torch.ops.sparse_ops.ff_forward_gated(X, G, K, V)` | Fused gated MLP. |
 | `torch.ops.sparse_ops.ff_backward_gated(...)` | Driven by autograd. |
-| `torch.ops.sparse_ops.ell_spmm_raw(...)` | Low-level ELL × dense GEMM (see `benchmark_spmm.py`). |
 | `torch.ops.sparse_ops_config.*` | Runtime knobs — see `KNOBS.md`. |
-| `torch.ops.sparse_ops_perf.{reset_stats,print_report}` | Active when built with `SPARSE_ENABLE_PERF_PROFILING=1`. |
 
 ## `down_proj.weight` layout
 
