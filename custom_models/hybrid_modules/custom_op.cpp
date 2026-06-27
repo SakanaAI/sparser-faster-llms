@@ -54,14 +54,14 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, HybridSpPtr, HybridSpPtr, HybridS
     P = c10::make_intrusive<hybrid_sp_t>(m, n, X.device());
 
     // T_n_comp / FUSED_T_n must match the mm_wgmma_nt_128x256x64TS8 instantiation.
-    static at::Tensor bwell_packed_ws;
+    static at::Tensor twell_packed_ws;
     static int ws_M = -1, ws_N_TILES = -1;
     constexpr int T_n_comp  = 32;
     constexpr int FUSED_T_n = 256;
     const int N_TILES = n / FUSED_T_n;
 
-    if (!bwell_packed_ws.defined() || ws_M != m || ws_N_TILES != N_TILES) {
-        bwell_packed_ws = at::empty({m, N_TILES * T_n_comp}, X.options().dtype(at::kInt));
+    if (!twell_packed_ws.defined() || ws_M != m || ws_N_TILES != N_TILES) {
+        twell_packed_ws = at::empty({m, N_TILES * T_n_comp}, X.options().dtype(at::kInt));
         ws_M      = m;
         ws_N_TILES = N_TILES;
     }
@@ -71,13 +71,13 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, HybridSpPtr, HybridSpPtr, HybridS
         P->ell_col_indices(),
         P->ell_values(),
         P->row_counters(),
-        reinterpret_cast<uint32_t*>(bwell_packed_ws.data_ptr()),
+        reinterpret_cast<uint32_t*>(twell_packed_ws.data_ptr()),
         static_cast<float*>(l0.data_ptr()),
         stream.stream());
 
     if (fused_ok) {
         populate_overflow_tail_from_packed(
-            reinterpret_cast<const uint32_t*>(bwell_packed_ws.data_ptr()),
+            reinterpret_cast<const uint32_t*>(twell_packed_ws.data_ptr()),
             P->row_counters(),
             P->overflow_counter(),
             P->tail_dense(),
