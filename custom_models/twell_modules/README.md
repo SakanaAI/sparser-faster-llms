@@ -32,6 +32,18 @@ If you want to split the block manually, use:
 - `D2TLinear` + `T2DLinear` for non-gated blocks.
 - `D2TLinear` + `GatedT2DLinear` for gated blocks.
 
+## Compression factor and flex kernels
+
+Flex kernels are a variants to the default TwELL kernels that are expected to 
+be ~0.5% more performant in cases of non-uniform sparsity patterns. In terms of
+the overall gated MLP block, the performance difference between flex and 
+non-flex kernels is expected to be less than 0.1% in most cases.
+
+Packed sparse outputs use `compression_factor=8` by default, which is a 
+conservative recommended value for the model trained with $L_1=2\times 10^5$.
+Gated TwELL paths also support `compression_factor=4` and `compression_factor=2` when
+`flex_kernels=True`.
+
 ## Precision and in-place modes
 
 `TwELLGatedMLP` and `GatedT2DLinear` support `highest_precision=True`. This uses a
@@ -40,5 +52,4 @@ full fp32 path for the fused gated up/down projection; the default
 
 `TwELLMLP` and `TwELLGatedMLP` also support `inplace=True` to overwrite the input
 activation and reduce memory traffic. 
-
 

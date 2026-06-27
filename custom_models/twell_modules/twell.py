@@ -14,7 +14,8 @@ os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "9.0a")
 _BASE_DIR = Path(__file__).resolve().parent
 _DEFAULT_EXT_NAME = "twell_prod_ext"
 _SHARED_PACKED_HIDDEN_STATE: torch.Tensor | None = None
-_SHARED_PACKED_HIDDEN_STATE_SPEC: tuple[str, int, int, int] | None = None
+_SHARED_PACKED_HIDDEN_STATE_SPEC: tuple[str, int, int, int, int] | None = None
+_SUPPORTED_COMPRESSION_FACTORS: Final[set[int]] = {2, 4, 8}
 
 ALGORITHM_SPECS = {
     "twell_d2t": {
@@ -140,13 +141,22 @@ def _module_for(ext, *, algorithms: list[str]):
     return ext if ext is not None else get_ext(algorithms=algorithms)
 
 
-def packed_width(output_n: int, tile_n: int = 256) -> int:
+def _validate_compression_factor(compression_factor: int) -> int:
+    """Validates the TwELL packed compression factor."""
+    compression_factor = int(compression_factor)
+    if compression_factor not in _SUPPORTED_COMPRESSION_FACTORS:
+        raise ValueError("compression_factor must be one of {8, 4, 2}")
+    return compression_factor
+
+
+def packed_width(output_n: int, tile_n: int = 256, compression_factor: int = 8) -> int:
     """Returns the packed width used by TwELL sparse outputs."""
+    compression_factor = _validate_compression_factor(compression_factor)
     if output_n % tile_n != 0:
         raise ValueError(f"output_n must be divisible by {tile_n}")
-    if output_n % 8 != 0:
-        raise ValueError("output_n must be divisible by 8")
-    return output_n // 8
+    if tile_n % compression_factor != 0:
+        raise ValueError("tile_n must be divisible by compression_factor")
+    return (output_n // tile_n) * (tile_n // compression_factor)
 
 
 def allocate_packed_output(
@@ -155,9 +165,14 @@ def allocate_packed_output(
     *,
     device: torch.device | str,
     tile_n: int = 256,
+    compression_factor: int = 8,
 ) -> torch.Tensor:
     """Allocates a zeroed packed sparse output buffer."""
-    return torch.zeros((m, packed_width(n, tile_n=tile_n)), device=device, dtype=torch.uint32)
+    return torch.zeros(
+        (m, packed_width(n, tile_n=tile_n, compression_factor=compression_factor)),
+        device=device,
+        dtype=torch.uint32,
+    )
 
 
 def _shared_packed_hidden_state(
@@ -165,19 +180,26 @@ def _shared_packed_hidden_state(
     n: int,
     *,
     device: torch.device,
+    compression_factor: int = 8,
 ) -> torch.Tensor:
     """Returns a shared packed hidden-state workspace for the requested shape."""
     global _SHARED_PACKED_HIDDEN_STATE
     global _SHARED_PACKED_HIDDEN_STATE_SPEC
 
+    compression_factor = _validate_compression_factor(compression_factor)
     device_index: Final[int] = -1 if device.index is None else int(device.index)
-    cache_key = (device.type, device_index, int(m), int(n))
+    cache_key = (device.type, device_index, int(m), int(n), compression_factor)
     if (
         _SHARED_PACKED_HIDDEN_STATE is None
         or _SHARED_PACKED_HIDDEN_STATE_SPEC != cache_key
         or _SHARED_PACKED_HIDDEN_STATE.device != device
     ):
-        _SHARED_PACKED_HIDDEN_STATE = allocate_packed_output(m, n, device=device)
+        _SHARED_PACKED_HIDDEN_STATE = allocate_packed_output(
+            m,
+            n,
+            device=device,
+            compression_factor=compression_factor,
+        )
         _SHARED_PACKED_HIDDEN_STATE_SPEC = cache_key
     return _SHARED_PACKED_HIDDEN_STATE
 
@@ -194,10 +216,16 @@ def packed_to_dense(
     packed: torch.Tensor,
     output_n: int,
     tile_n: int = 256,
+    compression_factor: int = 8,
 ) -> torch.Tensor:
     """Converts a packed TwELL tensor back to a dense bf16 tensor."""
+    compression_factor = _validate_compression_factor(compression_factor)
     m, compressed_n = packed.shape
-    expected_compressed_n = packed_width(output_n, tile_n=tile_n)
+    expected_compressed_n = packed_width(
+        output_n,
+        tile_n=tile_n,
+        compression_factor=compression_factor,
+    )
     if packed.dtype != torch.uint32:
         raise ValueError(f"packed tensor must be uint32, got {packed.dtype}")
     if compressed_n != expected_compressed_n:
@@ -205,7 +233,7 @@ def packed_to_dense(
             f"packed width mismatch: got {compressed_n}, expected {expected_compressed_n}"
         )
 
-    compressed_per_tile = tile_n // 8
+    compressed_per_tile = tile_n // compression_factor
     payload_slots = compressed_per_tile - 1
     out = torch.zeros((m, output_n), device=packed.device, dtype=torch.bfloat16)
     row_ids = torch.arange(m, device=packed.device, dtype=torch.int64)[:, None]
@@ -240,11 +268,13 @@ def matmul_sparse(
     A: torch.Tensor,
     B: torch.Tensor,
     algorithm: str = "twell_d2t",
+    compression_factor: int = 8,
     ext=None,
 ) -> torch.Tensor:
     """Runs packed sparse matmul and returns the packed output."""
+    compression_factor = _validate_compression_factor(compression_factor)
     module = _module_for(ext, algorithms=[algorithm])
-    return module.matmul_sparse(A, B, algorithm)
+    return module.matmul_sparse(A, B, algorithm, compression_factor)
 
 
 def matmul_sparse_out(
@@ -252,11 +282,13 @@ def matmul_sparse_out(
     B: torch.Tensor,
     C_packed: torch.Tensor,
     algorithm: str = "twell_d2t",
+    compression_factor: int = 8,
     ext=None,
 ) -> None:
     """Runs packed sparse matmul into a caller-provided packed output tensor."""
+    compression_factor = _validate_compression_factor(compression_factor)
     module = _module_for(ext, algorithms=[algorithm])
-    module.matmul_sparse_out(A, B, C_packed, algorithm)
+    module.matmul_sparse_out(A, B, C_packed, algorithm, compression_factor)
 
 
 def matmul_t2d(
@@ -288,11 +320,24 @@ def matmul_gated_t2d(
     UP: torch.Tensor,
     DOWN: torch.Tensor,
     highest_precision: bool = False,
+    compression_factor: int = 8,
+    flex_kernels: bool = False,
     ext=None,
 ) -> torch.Tensor:
     """Runs gated packed-to-dense projection and returns the dense output."""
+    compression_factor = _validate_compression_factor(compression_factor)
+    if not flex_kernels and compression_factor != 8:
+        raise ValueError("compression_factor != 8 requires flex_kernels=True")
     module = _module_for(ext, algorithms=["twell_gated_t2d"])
-    return module.matmul_gated_t2d(IN_dense, GATE_packed, UP, DOWN, bool(highest_precision))
+    return module.matmul_gated_t2d(
+        IN_dense,
+        GATE_packed,
+        UP,
+        DOWN,
+        bool(highest_precision),
+        compression_factor,
+        bool(flex_kernels),
+    )
 
 
 def matmul_gated_t2d_out(
@@ -302,21 +347,37 @@ def matmul_gated_t2d_out(
     DOWN: torch.Tensor,
     OUT: torch.Tensor,
     highest_precision: bool = False,
+    compression_factor: int = 8,
+    flex_kernels: bool = False,
     ext=None,
 ) -> None:
     """Runs gated packed-to-dense projection into a caller-provided output tensor."""
+    compression_factor = _validate_compression_factor(compression_factor)
+    if not flex_kernels and compression_factor != 8:
+        raise ValueError("compression_factor != 8 requires flex_kernels=True")
     module = _module_for(ext, algorithms=["twell_gated_t2d"])
-    module.matmul_gated_t2d_out(IN_dense, GATE_packed, UP, DOWN, OUT, bool(highest_precision))
+    module.matmul_gated_t2d_out(
+        IN_dense,
+        GATE_packed,
+        UP,
+        DOWN,
+        OUT,
+        bool(highest_precision),
+        compression_factor,
+        bool(flex_kernels),
+    )
 
 
 def create_d2t_layer(
     layer_number: int,
     B: torch.Tensor,
+    compression_factor: int = 8,
     ext=None,
 ) -> None:
     """Creates or refreshes cached D2T state for one layer id."""
+    compression_factor = _validate_compression_factor(compression_factor)
     module = _module_for(ext, algorithms=["twell_d2t"])
-    module.create_d2t_layer(int(layer_number), B)
+    module.create_d2t_layer(int(layer_number), B, compression_factor)
 
 
 def run_d2t_layer(
@@ -358,11 +419,24 @@ def run_gated_mlp_layer(
     UP: torch.Tensor,
     DOWN: torch.Tensor,
     highest_precision: bool = False,
+    compression_factor: int = 8,
+    flex_kernels: bool = False,
     ext=None,
 ) -> torch.Tensor:
     """Runs the fused gated TwELL MLP."""
+    compression_factor = _validate_compression_factor(compression_factor)
+    if not flex_kernels and compression_factor != 8:
+        raise ValueError("compression_factor != 8 requires flex_kernels=True")
     module = _module_for(ext, algorithms=["twell_mlp"])
-    return module.run_gated_mlp_layer(int(layer_number), A, UP, DOWN, bool(highest_precision))
+    return module.run_gated_mlp_layer(
+        int(layer_number),
+        A,
+        UP,
+        DOWN,
+        bool(highest_precision),
+        compression_factor,
+        bool(flex_kernels),
+    )
 
 
 def _run_mlp_layer_with_hidden_states(
@@ -387,12 +461,24 @@ def _run_gated_mlp_layer_with_hidden_states(
     DOWN: torch.Tensor,
     C_packed: torch.Tensor,
     highest_precision: bool = False,
+    compression_factor: int = 8,
+    flex_kernels: bool = False,
     ext=None,
 ) -> torch.Tensor:
     """Runs the fused gated TwELL MLP with caller-provided packed hidden states."""
+    compression_factor = _validate_compression_factor(compression_factor)
+    if not flex_kernels and compression_factor != 8:
+        raise ValueError("compression_factor != 8 requires flex_kernels=True")
     module = _module_for(ext, algorithms=["twell_mlp"])
     return module._run_gated_mlp_layer_with_hidden_states(
-        int(layer_number), A, UP, DOWN, C_packed, bool(highest_precision)
+        int(layer_number),
+        A,
+        UP,
+        DOWN,
+        C_packed,
+        bool(highest_precision),
+        compression_factor,
+        bool(flex_kernels),
     )
 
 
@@ -414,11 +500,24 @@ def run_gated_mlp_layer_inplace(
     UP: torch.Tensor,
     DOWN: torch.Tensor,
     highest_precision: bool = False,
+    compression_factor: int = 8,
+    flex_kernels: bool = False,
     ext=None,
 ) -> None:
     """Runs the fused gated TwELL MLP in place."""
+    compression_factor = _validate_compression_factor(compression_factor)
+    if not flex_kernels and compression_factor != 8:
+        raise ValueError("compression_factor != 8 requires flex_kernels=True")
     module = _module_for(ext, algorithms=["twell_mlp"])
-    module.run_gated_mlp_layer_inplace(int(layer_number), A, UP, DOWN, bool(highest_precision))
+    module.run_gated_mlp_layer_inplace(
+        int(layer_number),
+        A,
+        UP,
+        DOWN,
+        bool(highest_precision),
+        compression_factor,
+        bool(flex_kernels),
+    )
 
 
 def _run_mlp_layer_inplace_with_hidden_states(
@@ -443,12 +542,24 @@ def _run_gated_mlp_layer_inplace_with_hidden_states(
     DOWN: torch.Tensor,
     C_packed: torch.Tensor,
     highest_precision: bool = False,
+    compression_factor: int = 8,
+    flex_kernels: bool = False,
     ext=None,
 ) -> None:
     """Runs the fused gated TwELL MLP in place with caller-provided packed hidden states."""
+    compression_factor = _validate_compression_factor(compression_factor)
+    if not flex_kernels and compression_factor != 8:
+        raise ValueError("compression_factor != 8 requires flex_kernels=True")
     module = _module_for(ext, algorithms=["twell_mlp"])
     module._run_gated_mlp_layer_inplace_with_hidden_states(
-        int(layer_number), A, UP, DOWN, C_packed, bool(highest_precision)
+        int(layer_number),
+        A,
+        UP,
+        DOWN,
+        C_packed,
+        bool(highest_precision),
+        compression_factor,
+        bool(flex_kernels),
     )
 
 
@@ -473,16 +584,19 @@ class D2TLayer:
         self,
         layer_number: int,
         B: torch.Tensor,
+        compression_factor: int = 8,
         ext=None,
     ):
         self.layer_number = int(layer_number)
         self.ext = _module_for(ext, algorithms=["twell_d2t"])
         self.m: int | None = None
         self.n = int(B.size(0))
+        self.compression_factor = _validate_compression_factor(compression_factor)
         self.c_packed: torch.Tensor | None = None
         create_d2t_layer(
             self.layer_number,
             B,
+            compression_factor=self.compression_factor,
             ext=self.ext,
         )
 
@@ -503,7 +617,12 @@ class D2TLayer:
             or self.c_packed.size(0) != A.size(0)
             or self.c_packed.device != A.device
         ):
-            self.c_packed = allocate_packed_output(A.size(0), self.n, device=A.device)
+            self.c_packed = allocate_packed_output(
+                A.size(0),
+                self.n,
+                device=A.device,
+                compression_factor=self.compression_factor,
+            )
         return self.c_packed
 
     def prepare_shared_hidden_state(self, A: torch.Tensor) -> torch.Tensor:
@@ -511,7 +630,12 @@ class D2TLayer:
         if self.m != m:
             ensure_d2t_layer_shape(self.layer_number, m, ext=self.ext)
             self.m = m
-        return _shared_packed_hidden_state(m, self.n, device=A.device)
+        return _shared_packed_hidden_state(
+            m,
+            self.n,
+            device=A.device,
+            compression_factor=self.compression_factor,
+        )
 
     def run(
         self,
@@ -540,11 +664,17 @@ class D2TLinear(nn.Module):
         self,
         layer_number: int,
         B: torch.Tensor,
+        compression_factor: int = 8,
         ext=None,
     ):
         super().__init__()
         self.register_buffer("B", B.contiguous())
-        self.layer = D2TLayer(layer_number=layer_number, B=self.B, ext=ext)
+        self.layer = D2TLayer(
+            layer_number=layer_number,
+            B=self.B,
+            compression_factor=compression_factor,
+            ext=ext,
+        )
 
     def forward(self, A: torch.Tensor, C_packed: torch.Tensor | None = None) -> torch.Tensor:
         return self.layer.run(A, C_packed=C_packed)
@@ -565,9 +695,12 @@ class T2DLinear(nn.Module):
         self,
         DOWN: torch.Tensor,
         num_splits: int = 2,
+        compression_factor: int = 8,
         ext=None,
     ):
         super().__init__()
+        if compression_factor != 8:
+            raise ValueError("Only compression_factor=8 is currently supported for T2DLinear")
         self.register_buffer("DOWN", DOWN.contiguous())
         self.num_splits = int(num_splits)
         self.ext = _module_for(ext, algorithms=["twell_t2d"])
@@ -593,15 +726,25 @@ class GatedT2DLinear(nn.Module):
         UP: torch.Tensor,
         DOWN: torch.Tensor,
         highest_precision: bool = False,
+        compression_factor: int = 8,
+        flex_kernels: bool = False,
         ext=None,
     ):
         super().__init__()
+        compression_factor = _validate_compression_factor(compression_factor)
+        if compression_factor != 8 and not flex_kernels:
+            raise ValueError(
+                "Only compression_factor=8 is currently supported for "
+                "GatedT2DLinear without flex kernels, please set flex_kernels=True"
+            )
         self.register_buffer("UP", UP.contiguous())
         self.register_buffer("DOWN", DOWN.contiguous())
         self.ext = _module_for(ext, algorithms=["twell_gated_t2d"])
         # When enabled, the fused gated up+down projection uses fp32
         # instead of the regular mixed-precision bf16-style matmul path.
         self.highest_precision = bool(highest_precision)
+        self.compression_factor = compression_factor
+        self.flex_kernels = bool(flex_kernels)
         self._out: torch.Tensor | None = None
 
     def forward(
@@ -629,6 +772,8 @@ class GatedT2DLinear(nn.Module):
             self.DOWN,
             OUT,
             highest_precision=use_highest_precision,
+            compression_factor=self.compression_factor,
+            flex_kernels=self.flex_kernels,
             ext=self.ext,
         )
         return OUT
@@ -643,6 +788,7 @@ class _BaseTwELLMLP(nn.Module, abc.ABC):
         *,
         inplace: bool = False,
         preallocate_shared_hidden_state: bool = False,
+        compression_factor: int = 8,
         ext=None,
     ):
         super().__init__()
@@ -650,10 +796,12 @@ class _BaseTwELLMLP(nn.Module, abc.ABC):
         self.ext = _module_for(ext, algorithms=["twell_mlp"])
         self.inplace = bool(inplace)
         self.preallocate_shared_hidden_state = bool(preallocate_shared_hidden_state)
+        self.compression_factor = _validate_compression_factor(compression_factor)
         if B.is_cuda:
             self.layer: D2TLayer | None = D2TLayer(
                 layer_number=self.layer_number,
                 B=B,
+                compression_factor=self.compression_factor,
                 ext=self.ext,
             )
         else:
@@ -679,6 +827,7 @@ class _BaseTwELLMLP(nn.Module, abc.ABC):
         self.layer = D2TLayer(
             layer_number=self.layer_number,
             B=B,
+            compression_factor=self.compression_factor,
             ext=self.ext,
         )
         self._runtime_forward = self._forward_impl
@@ -713,8 +862,12 @@ class TwELLMLP(_BaseTwELLMLP):
         num_splits: int = 2,
         inplace: bool = False,
         preallocate_shared_hidden_state: bool = False,
+        compression_factor: int = 8,
         ext=None,
     ):
+        compression_factor = _validate_compression_factor(compression_factor)
+        if compression_factor != 8:
+            raise ValueError("Only compression_factor=8 is currently supported for TwELLMLP")
         up = UP.contiguous()
         down = DOWN.contiguous()
         super().__init__(
@@ -722,6 +875,7 @@ class TwELLMLP(_BaseTwELLMLP):
             B=up,
             inplace=inplace,
             preallocate_shared_hidden_state=preallocate_shared_hidden_state,
+            compression_factor=compression_factor,
             ext=ext,
         )
         self.register_buffer("UP", up)
@@ -790,8 +944,13 @@ class TwELLGatedMLP(_BaseTwELLMLP):
         inplace: bool = False,
         preallocate_shared_hidden_state: bool = False,
         highest_precision: bool = False,
+        compression_factor: int = 8,
+        flex_kernels: bool = False,
         ext=None,
     ):
+        compression_factor = _validate_compression_factor(compression_factor)
+        if compression_factor != 8 and not flex_kernels:
+            raise ValueError("compression_factor != 8 requires flex_kernels=True")
         gate = GATE.contiguous()
         up = UP.contiguous()
         down = DOWN.contiguous()
@@ -800,11 +959,13 @@ class TwELLGatedMLP(_BaseTwELLMLP):
             B=gate,
             inplace=inplace,
             preallocate_shared_hidden_state=preallocate_shared_hidden_state,
+            compression_factor=compression_factor,
             ext=ext,
         )
         # When enabled, the fused gated up+down projection uses fp32
         # instead of the regular mixed-precision bf16-style matmul path.
         self.highest_precision = bool(highest_precision)
+        self.flex_kernels = bool(flex_kernels)
         self.register_buffer("GATE", gate)
         self.register_buffer("UP", up)
         self.register_buffer("DOWN", down)
@@ -838,6 +999,8 @@ class TwELLGatedMLP(_BaseTwELLMLP):
             self.UP,
             self.DOWN,
             highest_precision=False,
+            compression_factor=self.compression_factor,
+            flex_kernels=self.flex_kernels,
             ext=self.ext,
         )
 
@@ -848,6 +1011,8 @@ class TwELLGatedMLP(_BaseTwELLMLP):
             self.UP,
             self.DOWN,
             highest_precision=True,
+            compression_factor=self.compression_factor,
+            flex_kernels=self.flex_kernels,
             ext=self.ext,
         )
 
@@ -858,6 +1023,8 @@ class TwELLGatedMLP(_BaseTwELLMLP):
             self.UP,
             self.DOWN,
             highest_precision=False,
+            compression_factor=self.compression_factor,
+            flex_kernels=self.flex_kernels,
             ext=self.ext,
         )
         return A
@@ -869,6 +1036,8 @@ class TwELLGatedMLP(_BaseTwELLMLP):
             self.UP,
             self.DOWN,
             highest_precision=True,
+            compression_factor=self.compression_factor,
+            flex_kernels=self.flex_kernels,
             ext=self.ext,
         )
         return A
@@ -881,6 +1050,8 @@ class TwELLGatedMLP(_BaseTwELLMLP):
             self.DOWN,
             self.layer.prepare_shared_hidden_state(A),
             highest_precision=False,
+            compression_factor=self.compression_factor,
+            flex_kernels=self.flex_kernels,
             ext=self.ext,
         )
 
@@ -892,6 +1063,8 @@ class TwELLGatedMLP(_BaseTwELLMLP):
             self.DOWN,
             self.layer.prepare_shared_hidden_state(A),
             highest_precision=True,
+            compression_factor=self.compression_factor,
+            flex_kernels=self.flex_kernels,
             ext=self.ext,
         )
 
@@ -903,6 +1076,8 @@ class TwELLGatedMLP(_BaseTwELLMLP):
             self.DOWN,
             self.layer.prepare_shared_hidden_state(A),
             highest_precision=False,
+            compression_factor=self.compression_factor,
+            flex_kernels=self.flex_kernels,
             ext=self.ext,
         )
         return A
@@ -915,6 +1090,8 @@ class TwELLGatedMLP(_BaseTwELLMLP):
             self.DOWN,
             self.layer.prepare_shared_hidden_state(A),
             highest_precision=True,
+            compression_factor=self.compression_factor,
+            flex_kernels=self.flex_kernels,
             ext=self.ext,
         )
         return A
