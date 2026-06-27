@@ -1200,7 +1200,8 @@ void run_d2t_layer_128x256x64TS8(
 void run_d2t_layer_128x256x64TS4(
     const int layer_number,
     at::BFloat16* A_d,
-    uint32_t* C_packed_d
+    uint32_t* C_packed_d,
+    cudaStream_t stream = 0
 ) {
     auto it = CACHED_D2T_LAYERS.find(layer_number);
     if (it == CACHED_D2T_LAYERS.end()) {
@@ -1213,7 +1214,8 @@ void run_d2t_layer_128x256x64TS4(
         C_packed_d
     );
     run_d2t_layer_cache<128, 256, 64, 2, 1, 3, 128, 64, true>(
-        it->second
+        it->second,
+        stream
     );
 }
 
@@ -1222,7 +1224,8 @@ void run_d2t_layer_128x256x64TS4(
 void run_d2t_layer_128x256x64TS2(
     const int layer_number,
     at::BFloat16* A_d,
-    uint32_t* C_packed_d
+    uint32_t* C_packed_d,
+    cudaStream_t stream = 0
 ) {
     auto it = CACHED_D2T_LAYERS.find(layer_number);
     if (it == CACHED_D2T_LAYERS.end()) {
@@ -1235,7 +1238,8 @@ void run_d2t_layer_128x256x64TS2(
         C_packed_d
     );
     run_d2t_layer_cache<128, 256, 64, 2, 1, 3, 128, 128, true>(
-        it->second
+        it->second,
+        stream
     );
 }
 
@@ -1289,7 +1293,8 @@ void mm_wgmma_nt_128x256x64TS8(
 // inputs: A pointer, B pointer, packed-C pointer, logical M/K/N. output: packed positive activations written.
 void mm_wgmma_nt_128x256x64TS4(
     at::BFloat16* A_d, at::BFloat16* B_d, uint32_t* C_packed_d,
-    const int M, const int K, const int N
+    const int M, const int K, const int N,
+    cudaStream_t stream
 ) {
     constexpr int LEGACY_LAYER_ID = -1;
     create_d2t_layer_128x256x64TS4(
@@ -1304,7 +1309,8 @@ void mm_wgmma_nt_128x256x64TS4(
     run_d2t_layer_128x256x64TS4(
         LEGACY_LAYER_ID,
         A_d,
-        C_packed_d
+        C_packed_d,
+        stream
     );
 }
 
@@ -1312,7 +1318,8 @@ void mm_wgmma_nt_128x256x64TS4(
 // inputs: A pointer, B pointer, packed-C pointer, logical M/K/N. output: packed positive activations written.
 void mm_wgmma_nt_128x256x64TS2(
     at::BFloat16* A_d, at::BFloat16* B_d, uint32_t* C_packed_d,
-    const int M, const int K, const int N
+    const int M, const int K, const int N,
+    cudaStream_t stream
 ) {
     constexpr int LEGACY_LAYER_ID = -1;
     create_d2t_layer_128x256x64TS2(
@@ -1327,7 +1334,8 @@ void mm_wgmma_nt_128x256x64TS2(
     run_d2t_layer_128x256x64TS2(
         LEGACY_LAYER_ID,
         A_d,
-        C_packed_d
+        C_packed_d,
+        stream
     );
 }
 

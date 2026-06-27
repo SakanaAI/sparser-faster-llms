@@ -29,7 +29,8 @@ void mm_wgmma_nt_128x256x64TS4(
     uint32_t* C_packed_d,
     const int M,
     const int K,
-    const int N
+    const int N,
+    cudaStream_t stream = 0
 ) TWELL_WEAK;
 
 void mm_wgmma_nt_128x256x64TS2(
@@ -38,7 +39,8 @@ void mm_wgmma_nt_128x256x64TS2(
     uint32_t* C_packed_d,
     const int M,
     const int K,
-    const int N
+    const int N,
+    cudaStream_t stream = 0
 ) TWELL_WEAK;
 
 void create_d2t_layer_128x256x64TS8(
@@ -72,13 +74,15 @@ void run_d2t_layer_128x256x64TS8(
 void run_d2t_layer_128x256x64TS4(
     const int layer_number,
     at::BFloat16* A_d,
-    uint32_t* C_packed_d
+    uint32_t* C_packed_d,
+    cudaStream_t stream = 0
 ) TWELL_WEAK;
 
 void run_d2t_layer_128x256x64TS2(
     const int layer_number,
     at::BFloat16* A_d,
-    uint32_t* C_packed_d
+    uint32_t* C_packed_d,
+    cudaStream_t stream = 0
 ) TWELL_WEAK;
 
 void ensure_d2t_layer_shape_128x256x64TS8(
@@ -273,9 +277,9 @@ void run_gated_mlp_layer_128x256x64TS8_high_precision_inplace(
 ) TWELL_WEAK;
 }
 
-using SparseKernelPackedFn = void (*)(at::BFloat16*, at::BFloat16*, uint32_t*, int, int, int);
+using SparseKernelPackedFn = void (*)(at::BFloat16*, at::BFloat16*, uint32_t*, int, int, int, cudaStream_t);
 using CreateD2TLayerFn = void (*)(int, at::BFloat16*, int, int);
-using RunD2TLayerFn = void (*)(int, at::BFloat16*, uint32_t*);
+using RunD2TLayerFn = void (*)(int, at::BFloat16*, uint32_t*, cudaStream_t);
 using EnsureD2TLayerShapeFn = void (*)(int, int);
 using DestroyD2TLayerFn = void (*)(int);
 using DestroyAllD2TLayersFn = void (*)();
@@ -434,7 +438,8 @@ void matmul_sparse_out(
         C_packed.data_ptr<uint32_t>(),
         M,
         K,
-        N
+        N,
+        0
     );
 }
 
@@ -590,7 +595,7 @@ void run_d2t_layer(
     ensure_fn(layer_number, M);
 
     auto* fn = get_run_d2t_layer_fn(compression_factor);
-    fn(layer_number, A.data_ptr<at::BFloat16>(), C_packed.data_ptr<uint32_t>());
+    fn(layer_number, A.data_ptr<at::BFloat16>(), C_packed.data_ptr<uint32_t>(), 0);
     (void)K;
     (void)N;
 }
