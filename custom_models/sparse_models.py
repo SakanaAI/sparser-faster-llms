@@ -76,6 +76,15 @@ class NullTracker:
     ) -> None:
         pass
 
+    def record_l0_l1(
+        self,
+        layer_idx: int,
+        l0: torch.Tensor,
+        l1: torch.Tensor,
+        width: int,
+    ) -> None:
+        pass
+
     def finalize_forward_pass(
         self,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
@@ -171,6 +180,33 @@ class SparsityTracker:
 
         self._last_activated[layer_idx] = last_activated
 
+    def record_l0_l1(
+        self,
+        layer_idx: int,
+        l0: torch.Tensor,
+        l1: torch.Tensor,
+        width: int,
+    ) -> None:
+        """Record L0/L1 from the hybrid kernel's scalar outputs.
+
+        The kernel does not materialise the per-neuron mask, so
+        `_last_activated[layer_idx]` is intentionally not updated. Dead-neuron
+        statistics will be stale on layers running through this path; rely on
+        `sparsity_l0_cutoff` to keep less-sparse layers on the einsum path
+        if dead-neuron tracking matters.
+        """
+        if (not self.active) and torch.is_grad_enabled():
+            return
+        if layer_idx not in self._last_activated:
+            self.register_layer(
+                layer_idx=layer_idx, width=width, device=l0.device
+            )
+        self._l1_per_layer.append(l1)
+        if not self.active:
+            return
+        assert layer_idx == len(self._l0_per_layer)
+        self._l0_per_layer.append(l0)
+
     def get_alive_neurons(self) -> List[torch.Tensor]:
         if self._number_of_layers is None:
             raise ValueError(
@@ -232,6 +268,7 @@ class SparseMLP(nn.Module):
         new_intermediate_size: Optional[int] = None,
         compile_mlp: bool = False,
         execution_logic: str | Callable = "training",
+        use_hybrid_kernel: bool = False,
     ):
         super().__init__()
         self.layer_idx = layer_idx
@@ -265,6 +302,23 @@ class SparseMLP(nn.Module):
             )
         self.act_fn = nn.ReLU()
 
+        # Hybrid-kernel routing: when enabled, forward calls
+        # torch.ops.sparse_ops.ff_forward_gated and reads scalar l0/l1.
+        # The kernel expects down_proj.weight in [intermediate, hidden] layout,
+        # so we transpose it once at construction (HF default is [hidden,
+        # intermediate]). Adaptive auto-switching can flip _use_fast at runtime.
+        self._use_hybrid_kernel = bool(use_hybrid_kernel) and gated
+        self._use_fast = False  # Disabled by default
+        if self._use_hybrid_kernel:
+            from custom_models.hybrid_modules.sparse_ops_loader import (
+                load_sparse_ops,
+            )
+            load_sparse_ops()
+            with torch.no_grad():
+                self.down_proj.weight.data = (
+                    self.down_proj.weight.data.t().contiguous()
+                )
+
         self._training_mode = False
         if isinstance(execution_logic, str):
             if execution_logic == "inference":
@@ -294,10 +348,52 @@ class SparseMLP(nn.Module):
             hidden_states = self.act_fn(gate_projections) * up_projections
         else:
             hidden_states = self.act_fn(self.up_proj(hidden_states))
-        return self.down_proj(hidden_states)
+        return self._down_proj(hidden_states)
     
+    def enable_fast(self, use_fast: bool) -> None:
+        """Toggle the hybrid-kernel forward path on this layer at runtime.
+
+        Only takes effect if the layer was constructed with
+        `use_hybrid_kernel=True` (otherwise down_proj.weight is in HF layout
+        and the kernel cannot consume it).
+        """
+        self._use_fast = bool(use_fast) and self._use_hybrid_kernel
+
+    def _down_proj(self, activation: torch.Tensor) -> torch.Tensor:
+        """Apply the down projection respecting whichever layout we hold.
+
+        When `_use_hybrid_kernel` is set, `down_proj.weight` was transposed
+        once at construction (and again post-load by `hydra_utils.load_model`)
+        into the kernel-friendly `[intermediate, hidden]` layout, so calling
+        `nn.Linear.forward` (which assumes `[out, in]`) would produce the
+        wrong shape. Compute it directly instead.
+        """
+        if self._use_hybrid_kernel:
+            out = activation @ self.down_proj.weight
+            if self.down_proj.bias is not None:
+                out = out + self.down_proj.bias
+            return out
+        return self.down_proj(activation)
+
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         if self._training_mode:
+            if self._use_fast and self.gated:
+                outs, l0, l1, _, _, _ = (
+                    torch.ops.sparse_ops.ff_forward_gated(
+                        hidden_states,
+                        self.gate_proj.weight,
+                        self.up_proj.weight,
+                        self.down_proj.weight,
+                    )
+                )
+                self.tracker.record_l0_l1(
+                    layer_idx=self.layer_idx,
+                    l0=l0,
+                    l1=l1,
+                    width=self.intermediate_size,
+                )
+                return outs
+
             if self.gated:
                 gate_activation = self.gate_proj(hidden_states)
                 up_activation = self.up_proj(hidden_states)
@@ -311,7 +407,7 @@ class SparseMLP(nn.Module):
                 layer_idx=self.layer_idx,
                 absolute_activations=absolute_activation,
             )
-            return self.down_proj(activation)
+            return self._down_proj(activation)
         else:
             return self._forward_inference(hidden_states)
 
@@ -409,6 +505,9 @@ class SparseModelForCausalLM(abc.ABC):
         reinitialize: bool = False,
         mlp_execution_logic: str = 'training',
         baseline_run: bool = False,
+        use_hybrid_kernel: bool = False,
+        l0_cutoff: int = -1,
+        l0_cutoff_period: int = 20,
         **kwargs,
     ):
         super().__init__(config, **kwargs)
@@ -418,6 +517,10 @@ class SparseModelForCausalLM(abc.ABC):
         self.tracker = tracker
         self.new_intermediate_size = new_intermediate_size
         self.l1_coeff = l1_coeff
+        self.use_hybrid_kernel = use_hybrid_kernel
+        self.l0_cutoff = int(l0_cutoff)
+        self.l0_cutoff_period = max(1, int(l0_cutoff_period))
+        self._iter = 0
         if l1_start_warmup_step is not None:
             assert l1_end_warmup_step is not None
             self.l1_scheduler = Scheduler(
@@ -504,6 +607,7 @@ class SparseModelForCausalLM(abc.ABC):
                     tracker=self.tracker,
                     new_intermediate_size=self.new_intermediate_size,
                     execution_logic=self.mlp_execution_logic,
+                    use_hybrid_kernel=self.use_hybrid_kernel,
                 )
                 sparse_mlp.apply(_init_weights)
             self.model.layers[i].mlp = sparse_mlp
@@ -524,6 +628,20 @@ class SparseModelForCausalLM(abc.ABC):
         collect_stats: bool = False,
         **kwargs,
     ):
+        # Adaptive per-layer kernel switch: when l0_cutoff > 0, every
+        # l0_cutoff_period steps walk the layers and route those whose last
+        # measured L0 fell below the cutoff through the hybrid kernel; the
+        # rest stay on the einsum path (which keeps dead-neuron tracking live).
+        # use the previous iteration values to avoid gradient checkpointing issues
+        if self.use_hybrid_kernel and self.l0_cutoff > 0:
+            self._iter += 1
+            if self._iter % self.l0_cutoff_period == 0:
+                for i, layer in enumerate(self.model.layers):
+                    if i < len(self.tracker._l0_per_layer):
+                        layer.mlp.enable_fast(
+                            float(self.tracker._l0_per_layer[i]) < self.l0_cutoff
+                        )
+
         if (labels is not None or collect_stats) and not self.baseline_run:
             assert self.mlp_execution_logic == "training", (
                 "Can only collect sparsity statistics and L1 loss during when "
@@ -544,6 +662,7 @@ class SparseModelForCausalLM(abc.ABC):
             cache_position=cache_position,
             **kwargs,
         )
+
         if self.baseline_run:
             return output
 
@@ -595,6 +714,9 @@ def _create_sparse_config_class(
             sparsity_do_track: bool = True,
             sparsity_mlp_execution_logic: str = 'training',
             sparsity_baseline_run: bool = False,
+            sparsity_use_hybrid_kernel: bool = False,
+            sparsity_l0_cutoff: int = -1,
+            sparsity_l0_cutoff_period: int = 20,
             **kwargs,
         ):
             self.sparsity_train_batch_size = sparsity_train_batch_size
@@ -614,6 +736,9 @@ def _create_sparse_config_class(
             self.sparsity_do_track = sparsity_do_track
             self.sparsity_mlp_execution_logic = sparsity_mlp_execution_logic
             self.sparsity_baseline_run = sparsity_baseline_run
+            self.sparsity_use_hybrid_kernel = sparsity_use_hybrid_kernel
+            self.sparsity_l0_cutoff = sparsity_l0_cutoff
+            self.sparsity_l0_cutoff_period = sparsity_l0_cutoff_period
             if not hasattr(self, "mlp_bias"):
                 self.mlp_bias = mlp_bias
             super().__init__(**kwargs)
@@ -672,6 +797,9 @@ def _create_sparse_model_class(
                 l1_end_warmup_step=config.sparsity_end_warmup_step,
                 mlp_execution_logic=config.sparsity_mlp_execution_logic,
                 baseline_run=config.sparsity_baseline_run,
+                use_hybrid_kernel=config.sparsity_use_hybrid_kernel,
+                l0_cutoff=config.sparsity_l0_cutoff,
+                l0_cutoff_period=config.sparsity_l0_cutoff_period,
                 *args,
                 **kwargs,
             )

@@ -1,4 +1,5 @@
 #include <ATen/ATen.h>
+#include <cuda_runtime.h>
 
 #include <cstdint>
 
@@ -6,7 +7,8 @@ namespace TWELL_D2T {
 void run_d2t_layer_128x256x64TS8(
     const int layer_number,
     at::BFloat16* A_d,
-    uint32_t* C_packed_d
+    uint32_t* C_packed_d,
+    cudaStream_t stream = 0
 );
 }
 

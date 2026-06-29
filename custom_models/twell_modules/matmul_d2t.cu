@@ -666,7 +666,7 @@ void mm_wgmma_nt_kernel(
                                     }
                                     else
                                     {
-                                        tiles_s.c_packed[quadrant_store_offset_m][current_store_idx + 1] = 
+                                        tiles_s.c_packed[quadrant_store_offset_m][current_store_idx + 1] =
                                         tile_coord_n * T_n + quadrant_store_offset_n + quadrant_slice_n * 2 + element_n |
                                         (
                                             static_cast<uint32_t>(
@@ -1046,7 +1046,8 @@ template <
     const bool LOOP_OVERFLOW_STORAGE
 >
 void run_d2t_layer_cache(
-    const D2TLayerCache& cache
+    const D2TLayerCache& cache,
+    cudaStream_t stream = 0
 )
 {
     constexpr int BASE_SMEM_SIZE = sizeof(SmemStorage<T_m, T_n, T_k, QUEUE_SIZE, T_n_compressed>);
@@ -1066,7 +1067,7 @@ void run_d2t_layer_cache(
 
     dim3 grid_dim(NUM_ACTIVE_SMs);
     dim3 block_dim(NUM_THREADS_PER_BLOCK);
-    kernel<<<grid_dim, block_dim, SMEM_SIZE>>>(
+    kernel<<<grid_dim, block_dim, SMEM_SIZE, stream>>>(
             cache.A_tm, cache.B_tm,
             cache.C_packed_tm,
             SHARED_D2T_SCHEDULE.partitioned_schedule_d, SHARED_D2T_SCHEDULE.schedule_size_per_sm,
@@ -1175,7 +1176,8 @@ void ensure_d2t_layer_shape_128x256x64TS2(
 void run_d2t_layer_128x256x64TS8(
     const int layer_number,
     at::BFloat16* A_d,
-    uint32_t* C_packed_d
+    uint32_t* C_packed_d,
+    cudaStream_t stream = 0
 ) {
     auto it = CACHED_D2T_LAYERS.find(layer_number);
     if (it == CACHED_D2T_LAYERS.end()) {
@@ -1188,7 +1190,8 @@ void run_d2t_layer_128x256x64TS8(
         C_packed_d
     );
     run_d2t_layer_cache<128, 256, 64, 2, 1, 4, 128, 32, true>(
-        it->second
+        it->second,
+        stream
     );
 }
 
@@ -1197,7 +1200,8 @@ void run_d2t_layer_128x256x64TS8(
 void run_d2t_layer_128x256x64TS4(
     const int layer_number,
     at::BFloat16* A_d,
-    uint32_t* C_packed_d
+    uint32_t* C_packed_d,
+    cudaStream_t stream = 0
 ) {
     auto it = CACHED_D2T_LAYERS.find(layer_number);
     if (it == CACHED_D2T_LAYERS.end()) {
@@ -1210,7 +1214,8 @@ void run_d2t_layer_128x256x64TS4(
         C_packed_d
     );
     run_d2t_layer_cache<128, 256, 64, 2, 1, 3, 128, 64, true>(
-        it->second
+        it->second,
+        stream
     );
 }
 
@@ -1219,7 +1224,8 @@ void run_d2t_layer_128x256x64TS4(
 void run_d2t_layer_128x256x64TS2(
     const int layer_number,
     at::BFloat16* A_d,
-    uint32_t* C_packed_d
+    uint32_t* C_packed_d,
+    cudaStream_t stream = 0
 ) {
     auto it = CACHED_D2T_LAYERS.find(layer_number);
     if (it == CACHED_D2T_LAYERS.end()) {
@@ -1232,7 +1238,8 @@ void run_d2t_layer_128x256x64TS2(
         C_packed_d
     );
     run_d2t_layer_cache<128, 256, 64, 2, 1, 3, 128, 128, true>(
-        it->second
+        it->second,
+        stream
     );
 }
 
@@ -1261,7 +1268,8 @@ void destroy_all_d2t_layers() {
 // inputs: A pointer, B pointer, packed-C pointer, logical M/K/N. output: packed positive activations written.
 void mm_wgmma_nt_128x256x64TS8(
     at::BFloat16* A_d, at::BFloat16* B_d, uint32_t* C_packed_d,
-    const int M, const int K, const int N
+    const int M, const int K, const int N,
+    cudaStream_t stream
 ) {
     constexpr int LEGACY_LAYER_ID = -1;
     create_d2t_layer_128x256x64TS8(
@@ -1276,7 +1284,8 @@ void mm_wgmma_nt_128x256x64TS8(
     run_d2t_layer_128x256x64TS8(
         LEGACY_LAYER_ID,
         A_d,
-        C_packed_d
+        C_packed_d,
+        stream
     );
 }
 
@@ -1284,7 +1293,8 @@ void mm_wgmma_nt_128x256x64TS8(
 // inputs: A pointer, B pointer, packed-C pointer, logical M/K/N. output: packed positive activations written.
 void mm_wgmma_nt_128x256x64TS4(
     at::BFloat16* A_d, at::BFloat16* B_d, uint32_t* C_packed_d,
-    const int M, const int K, const int N
+    const int M, const int K, const int N,
+    cudaStream_t stream
 ) {
     constexpr int LEGACY_LAYER_ID = -1;
     create_d2t_layer_128x256x64TS4(
@@ -1299,7 +1309,8 @@ void mm_wgmma_nt_128x256x64TS4(
     run_d2t_layer_128x256x64TS4(
         LEGACY_LAYER_ID,
         A_d,
-        C_packed_d
+        C_packed_d,
+        stream
     );
 }
 
@@ -1307,7 +1318,8 @@ void mm_wgmma_nt_128x256x64TS4(
 // inputs: A pointer, B pointer, packed-C pointer, logical M/K/N. output: packed positive activations written.
 void mm_wgmma_nt_128x256x64TS2(
     at::BFloat16* A_d, at::BFloat16* B_d, uint32_t* C_packed_d,
-    const int M, const int K, const int N
+    const int M, const int K, const int N,
+    cudaStream_t stream
 ) {
     constexpr int LEGACY_LAYER_ID = -1;
     create_d2t_layer_128x256x64TS2(
@@ -1322,7 +1334,8 @@ void mm_wgmma_nt_128x256x64TS2(
     run_d2t_layer_128x256x64TS2(
         LEGACY_LAYER_ID,
         A_d,
-        C_packed_d
+        C_packed_d,
+        stream
     );
 }
 
