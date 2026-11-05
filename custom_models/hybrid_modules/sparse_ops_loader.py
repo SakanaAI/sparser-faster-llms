@@ -6,7 +6,7 @@ import torch
 from torch.utils.cpp_extension import CUDA_HOME, load
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from mathdx_paths import cublasdx_include_dirs, d2t_sm90a_target  # noqa: E402
+from mathdx_paths import cublasdx_include_dirs, d2t_target_sm, default_arch_list  # noqa: E402
 
 # Environment variables:
 #   SPARSE_OPS_PREBUILT          - full path to a prebuilt sparse_ops.so. When set,
@@ -17,9 +17,10 @@ from mathdx_paths import cublasdx_include_dirs, d2t_sm90a_target  # noqa: E402
 #                                  produce distinct cached builds.
 #   MATHDX_HOME                  - MathDx package root (26.10+) providing cuBLASDx.
 #                                  See ../twell_modules/README.md.
-# TORCH_CUDA_ARCH_LIST drives nvcc; D2T requires an all-sm_90a target list.
+# TORCH_CUDA_ARCH_LIST drives nvcc (default: the current GPU, e.g. 10.0a). D2T is
+# built for a single architecture-specific target such as 9.0a, 10.0a or 10.7a.
 
-os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "9.0a")
+os.environ.setdefault("TORCH_CUDA_ARCH_LIST", default_arch_list())
 
 _BASE_DIR = Path(__file__).resolve().parent
 _EXT_NAME = "sparse_ops"
@@ -29,7 +30,7 @@ _BASE_SOURCES = [
     str(_BASE_DIR / "hybrid_sp.cu"),
     str(_BASE_DIR / "wgmma_gemm.cu"),
 ]
-_HOPPER_SOURCES = [
+_D2T_SOURCES = [
     str(_BASE_DIR.parent / "twell_modules" / "matmul_d2t.cu"),
 ]
 
@@ -66,13 +67,15 @@ def load_sparse_ops(verbose: bool = False):
     ]
     cflags = ["-O3", profiling_flag]
 
-    # matmul_d2t.cu only compiles for sm_90a; tell the hybrid wrapper whether
-    # its D2T symbol will be linked into this extension.
-    compile_d2t = d2t_sm90a_target(os.environ.get("TORCH_CUDA_ARCH_LIST", ""))
+    # matmul_d2t.cu compiles for one architecture-specific SM; tell the hybrid
+    # wrapper whether its D2T symbol is linked and which SM it runs on.
+    d2t_sm = d2t_target_sm(os.environ.get("TORCH_CUDA_ARCH_LIST", ""))
+    compile_d2t = d2t_sm is not None
     cuda_cflags.append(f"-DSPARSE_OPS_HAS_D2T={int(compile_d2t)}")
     sources = list(_BASE_SOURCES)
     if compile_d2t:
-        sources += _HOPPER_SOURCES
+        cuda_cflags.append(f"-DTWELL_D2T_SM={d2t_sm}")
+        sources += _D2T_SOURCES
 
     extra_ldflags = []
     if CUDA_HOME is not None:

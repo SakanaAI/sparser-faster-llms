@@ -16,8 +16,17 @@
 #include <ATen/ATen.h>
 #include "hilbert.cu"
 // Include ATen before cuBLASDx/CuTe to avoid name lookup conflicts.
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ != 900
-#error "the cuBLASDx D2T implementation is sm_90a only: build with -gencode arch=compute_90a,code=sm_90a"
+// TWELL_D2T_SM selects the single architecture-specific target (900 for sm_90a,
+// 1000 for sm_100a, 1070 for sm_107a, ...). The build derives it from
+// TORCH_CUDA_ARCH_LIST via mathdx_paths.d2t_target_sm.
+#ifndef TWELL_D2T_SM
+#error "define TWELL_D2T_SM to the target SM version, e.g. -DTWELL_D2T_SM=1000 with -gencode arch=compute_100a,code=sm_100a"
+#endif
+#if TWELL_D2T_SM < 900
+#error "the cuBLASDx D2T implementation requires sm_90a or newer"
+#endif
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ != TWELL_D2T_SM
+#error "TWELL_D2T_SM does not match the -gencode target: build D2T for exactly one architecture-specific SM"
 #endif
 
 // Disable device assertions in library headers, then restore this file's setting.
@@ -78,14 +87,16 @@ __device__ __forceinline__ void wait_read() { cute::tma_store_wait<0>(); }
 
 }  // namespace tma_store
 
-// 128x256x64 tiles use 256 compute threads and 128 producer threads.
+// 128x256x64 tiles use 256 compute threads on Hopper (two WGMMA warpgroups) and
+// 128 on Blackwell and newer (single-thread UTCMMA issue); cuBLASDx supplies the
+// pipeline producer roles.
 // Packed-output geometry is independent of the cluster shape.
 template<int TnComp>
 struct packed_geometry {
     static constexpr int tile_m = 128;
     static constexpr int tile_n = TILE_N;
     static constexpr int tile_k = 64;
-    static constexpr int threads = 256;
+    static constexpr int threads = TWELL_D2T_SM >= 1000 ? 128 : 256;
     static constexpr int t_n_comp = TnComp;
     static constexpr int packed_pitch = TnComp + PACKED_PAD;
     static constexpr int packed_elems = tile_m * packed_pitch;
@@ -95,8 +106,7 @@ struct packed_geometry {
     static_assert(packed_pitch * sizeof(uint32_t) % 16 == 0, "bulk store needs a 16B-multiple box extent");
 };
 
-// The staging tile is carved out of the same shared memory, so the pipeline depth
-// falls out of T_n_comp: 4 stages at 32, 3 at 64/128.
+// The library selects the pipeline depth after reserving the packed staging tile.
 template<int TnComp, int ClusterM, int ClusterN>
 struct gemm_traits: packed_geometry<TnComp> {
     using geom = packed_geometry<TnComp>;
@@ -121,7 +131,7 @@ struct gemm_traits: packed_geometry<TnComp> {
                           cublasdx::EnableInputStreaming() +
                           cublasdx::StaticBlockDim() +
                           cublasdx::BlocksPerCluster<ClusterM, ClusterN>() +
-                          cublasdx::SM<900, cublasdx::sm_modifier::arch_specific>());
+                          cublasdx::SM<TWELL_D2T_SM, cublasdx::sm_modifier::arch_specific>());
 
     // Require the requested multicast geometry; LDGSTS paths ignore clustering.
     static_assert(cublasdx::blocks_per_cluster_of_v_m<BLAS> == ClusterM && cublasdx::blocks_per_cluster_of_v_n<BLAS> == ClusterN,
@@ -470,6 +480,9 @@ void prepare_d2t_layer_static_cache(
     TORCH_CHECK(N > 0 && N <= 65536 && N % (T_n * CLUSTER_DIM_n) == 0,
                 "D2T requires positive N <= 65536 divisible by the cluster tile width");
     TORCH_CHECK(K > 0 && K % T_k == 0, "D2T requires positive K divisible by 64");
+    // The pipeline depth, and so the minimum K, depends on the target SM's shared memory.
+    constexpr int min_k = cublasdx_d2t::gemm_traits<T_n_compressed, CLUSTER_DIM_m, CLUSTER_DIM_n>::depth * T_k;
+    TORCH_CHECK(K >= min_k, "D2T requires K >= ", min_k, " to fill the cuBLASDx pipeline on sm_", TWELL_D2T_SM / 10, "a");
 
     if (cache.B_ptr != B_d ||
         cache.N != N || cache.K != K ||
@@ -633,8 +646,8 @@ void run_d2t_layer_cache(
     );
     if (!launched) {
         printf("D2T GEMM declined %dx%dx%d: M, N and K must be multiples of %d, %d and %d, "
-               "K must cover the pipeline depth, and the device must be sm_90a\n",
-               cache.M, cache.N, cache.K, T_m, T_n, T_k);
+               "K must cover the pipeline depth, and the device must be sm_%da\n",
+               cache.M, cache.N, cache.K, T_m, T_n, T_k, TWELL_D2T_SM / 10);
         exit(-1);
     }
 }

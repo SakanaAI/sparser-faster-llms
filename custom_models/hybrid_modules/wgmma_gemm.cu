@@ -179,10 +179,13 @@ bool wgmma_gate_gemm_to_ell_packed(
     return false;
 #else
     int dev = X_flat.get_device();
-    int major;
+    int major, minor;
     cudaError_t err = cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
     TORCH_CHECK(err == cudaSuccess, "cudaDeviceGetAttribute failed: ", cudaGetErrorString(err));
-    if (major != 9) return false;
+    err = cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
+    TORCH_CHECK(err == cudaSuccess, "cudaDeviceGetAttribute failed: ", cudaGetErrorString(err));
+    // Architecture-specific D2T code runs only on the exact SM it was built for.
+    if (major * 100 + minor * 10 != TWELL_D2T_SM) return false;
     if (M % 256 != 0 || K % 64 != 0 || N % 256 != 0) return false;
 
     constexpr int T_n      = 256;

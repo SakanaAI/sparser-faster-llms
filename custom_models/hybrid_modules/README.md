@@ -1,6 +1,6 @@
 # hybrid_modules
 
-Training-time CUDA kernels for sparse gated MLPs (Llama, Qwen) on H100, exposed to PyTorch as `torch.ops.sparse_ops.*`. Activations and weights live in a hybrid ELL + dense-tail format. See `CLAUDE.md` for kernel architecture, `KNOBS.md` for the runtime tuning API.
+Training-time CUDA kernels for sparse gated MLPs (Llama, Qwen) on Hopper and newer GPUs, exposed to PyTorch as `torch.ops.sparse_ops.*`. Activations and weights live in a hybrid ELL + dense-tail format. See `CLAUDE.md` for kernel architecture, `KNOBS.md` for the runtime tuning API.
 
 ## Build / loading
 
@@ -11,9 +11,11 @@ from sparse_ops_loader import load_sparse_ops
 load_sparse_ops()                      # registers torch.ops.sparse_ops.*
 ```
 
-The loader honors `TORCH_CUDA_ARCH_LIST` (default `9.0a`). It includes D2T only
-for `9.0a` builds and rejects mixed architecture lists containing `9.0a`. Other
-targets use the einsum + `create_hybrid_sparse_from_dense` fallback.
+The loader honors `TORCH_CUDA_ARCH_LIST` (default: the current GPU's
+architecture-specific target, e.g. `10.0a`). It includes D2T for a single
+architecture-specific target of `9.0a` or newer (e.g. `9.0a`, `10.0a`, `10.7a`)
+and rejects mixed lists containing one. Other targets, and GPUs that differ from
+the D2T target, use the einsum + `create_hybrid_sparse_from_dense` fallback.
 
 ### Pre-built `.so` (no nvcc on the load machine)
 
@@ -32,7 +34,7 @@ When `SPARSE_OPS_PREBUILT` is set, the loader skips JIT and calls `torch.ops.loa
 | Var | Purpose |
 |---|---|
 | `SPARSE_OPS_PREBUILT` | Full path to a prebuilt `sparse_ops.so`. Skips JIT compilation. |
-| `TORCH_CUDA_ARCH_LIST` | Standard PyTorch arch list. Default `9.0a`. |
+| `TORCH_CUDA_ARCH_LIST` | Standard PyTorch arch list. Default: current GPU, e.g. `10.0a`. |
 
 ## Quick start
 

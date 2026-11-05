@@ -10,14 +10,49 @@ def _env_path(name: str) -> Path | None:
     return Path(value) if value else None
 
 
-def d2t_sm90a_target(arch_list: str) -> bool:
-    """Whether a Torch architecture list can compile the Hopper-only D2T source."""
+_ARCH_SPECIFIC = re.compile(r"(\d+)\.(\d+)a(?:\+PTX)?")
+
+
+def d2t_target_sm(arch_list: str) -> int | None:
+    """SM version D2T compiles for (e.g. 900, 1000, 1070), or None to skip D2T.
+
+    D2T is built for exactly one architecture-specific target of sm_90a or newer,
+    e.g. "9.0a" (Hopper), "10.0a" (Blackwell) or "10.7a" (Rubin). Lists without
+    such a target select the non-D2T fallback; mixed lists are rejected.
+    """
     targets = [target for target in re.split(r"[\s;,]+", arch_list.strip()) if target]
-    sm90a = {"9.0a", "9.0a+PTX"}
-    selected = [target for target in targets if target in sm90a]
-    if selected and len(selected) != len(targets):
-        raise ValueError("D2T requires only sm_90a targets; split mixed TORCH_CUDA_ARCH_LIST builds")
-    return bool(selected)
+    selected = set()
+    for target in targets:
+        match = _ARCH_SPECIFIC.fullmatch(target)
+        if match and (int(match[1]), int(match[2])) >= (9, 0):
+            selected.add(int(match[1]) * 100 + int(match[2]) * 10)
+    if not selected:
+        return None
+    if len(selected) != 1 or any(not _ARCH_SPECIFIC.fullmatch(target) for target in targets):
+        raise ValueError("D2T requires a single architecture-specific target such as 9.0a, "
+                         "10.0a or 10.7a; split mixed TORCH_CUDA_ARCH_LIST builds")
+    return selected.pop()
+
+
+def d2t_gencode(sm: int) -> str:
+    """NVCC -gencode value for an SM version returned by d2t_target_sm."""
+    return f"arch=compute_{sm // 10}a,code=sm_{sm // 10}a"
+
+
+def default_arch_list() -> str:
+    """Architecture-specific target of the current GPU, e.g. "10.0a".
+
+    Falls back to "9.0a" when no sm_90+ GPU is visible (e.g. build machines).
+    """
+    try:
+        import torch
+        if torch.cuda.is_available():
+            major, minor = torch.cuda.get_device_capability()
+            if major >= 9:
+                return f"{major}.{minor}a"
+    except Exception:
+        pass
+    return "9.0a"
 
 
 def cublasdx_include_dirs() -> list[str]:
