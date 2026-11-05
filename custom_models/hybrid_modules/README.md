@@ -11,7 +11,9 @@ from sparse_ops_loader import load_sparse_ops
 load_sparse_ops()                      # registers torch.ops.sparse_ops.*
 ```
 
-The loader honors `TORCH_CUDA_ARCH_LIST` (default `9.0a`). On non-Hopper targets `matmul_d2t.cu` is dropped from the source list and `wgmma_gemm.cu` self-gates the WGMMA call via `__CUDA_ARCH_LIST__`, so `ff_forward_gated` falls back to einsum + `create_hybrid_sparse_from_dense`.
+The loader honors `TORCH_CUDA_ARCH_LIST` (default `9.0a`). It includes D2T only
+for `9.0a` builds and rejects mixed architecture lists containing `9.0a`. Other
+targets use the einsum + `create_hybrid_sparse_from_dense` fallback.
 
 ### Pre-built `.so` (no nvcc on the load machine)
 

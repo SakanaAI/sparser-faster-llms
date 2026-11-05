@@ -2,6 +2,24 @@
 
 TwELL provides Hopper-optimized sparse feed-forward kernels for LLM MLP blocks.
 
+`matmul_d2t.cu` builds against cuBLASDx from a released MathDx package
+(26.10 or newer). Point `MATHDX_HOME` at the versioned package root:
+
+```bash
+export MATHDX_HOME=/path/to/nvidia-mathdx-26.10.0-cuda13/nvidia/mathdx/26.10
+```
+
+The build uses `$MATHDX_HOME/include` and the CUTLASS headers bundled under
+`$MATHDX_HOME/external/cutlass/include`.
+
+The kernel targets `sm_90a` only. Set `TORCH_CUDA_ARCH_LIST=9.0a` when building
+D2T; mixed architecture lists are unsupported. The shipped 2x1 cluster requires
+`M % 256 == 0`, `N % 256 == 0`, and `K % 64 == 0`, with positive dimensions,
+`N <= 65536`, and at least four K stages for TS8 or three for TS4/TS2.
+
+The persistent grid is selected with CUDA's cluster-occupancy query during layer
+preparation. Prepare layers and their shapes before graph capture.
+
 ## Main Python APIs
 
 - `D2TLinear`: dense -> packed sparse hidden.
@@ -52,4 +70,3 @@ full fp32 path for the fused gated up/down projection; the default
 
 `TwELLMLP` and `TwELLGatedMLP` also support `inplace=True` to overwrite the input
 activation and reduce memory traffic. 
-

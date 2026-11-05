@@ -27,9 +27,12 @@
 #include <cuda_bf16.h>
 #include "perf_instrumentation.h"
 
-// packed.h pulls in Hopper-only declarations and is only safe to include
-// when device codegen targets sm_90a or when host-only translation runs.
-#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 900
+#ifndef SPARSE_OPS_HAS_D2T
+#define SPARSE_OPS_HAS_D2T 0
+#endif
+
+// Only the host wrapper needs the D2T declaration, and only when it is linked.
+#if SPARSE_OPS_HAS_D2T && !defined(__CUDA_ARCH__)
 #include "packed.h"
 #endif
 
@@ -171,18 +174,15 @@ bool wgmma_gate_gemm_to_ell_packed(
     float*           l0_out,
     cudaStream_t stream)
 {
-    // __CUDA_ARCH_LIST__ is auto-set by nvcc (CUDA 12+) on both host and device passes.
-    // When the build does not target sm_90a+, matmul_d2t.cu is excluded from sources,
-    // so calling mm_wgmma_nt_128x256x64TS8 would be a link error. Skip the WGMMA path
-    // and let custom_op.cpp take the einsum + create_hybrid_sparse_from_dense fallback.
-#if !defined(__CUDA_ARCH_LIST__) || (__CUDA_ARCH_LIST__) < 900
+    // The build defines this only when matmul_d2t.cu is present.
+#if !SPARSE_OPS_HAS_D2T
     return false;
 #else
     int dev = X_flat.get_device();
     int major;
     cudaError_t err = cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
     TORCH_CHECK(err == cudaSuccess, "cudaDeviceGetAttribute failed: ", cudaGetErrorString(err));
-    if (major < 9) return false;
+    if (major != 9) return false;
     if (M % 256 != 0 || K % 64 != 0 || N % 256 != 0) return false;
 
     constexpr int T_n      = 256;
@@ -211,7 +211,7 @@ bool wgmma_gate_gemm_to_ell_packed(
     PERF_STOP("bell_to_ell");
 
     return true;
-#endif  // __CUDA_ARCH_LIST__ < 900
+#endif  // SPARSE_OPS_HAS_D2T
 }
 
 #endif  // !__CUDA_ARCH__

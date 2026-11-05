@@ -1,12 +1,16 @@
 import abc
 import hashlib
 import os
+import sys
 from typing import Final
 from pathlib import Path
 
 import torch
 from torch import nn
 from torch.utils.cpp_extension import CUDA_HOME, load
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from mathdx_paths import cublasdx_include_dirs, d2t_sm90a_target  # noqa: E402
 
 # Hopper kernels: compile for sm90a by default.
 os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "9.0a")
@@ -98,6 +102,10 @@ def load_ext(
         "--expt-relaxed-constexpr",
         "--expt-extended-lambda",
     ]
+    compile_d2t = "twell_d2t" in selected
+    if compile_d2t:
+        if not d2t_sm90a_target(os.environ.get("TORCH_CUDA_ARCH_LIST", "")):
+            raise RuntimeError("twell_d2t requires TORCH_CUDA_ARCH_LIST=9.0a")
     extra_ldflags = []
     if CUDA_HOME is not None:
         extra_ldflags.append(f"-L{Path(CUDA_HOME) / 'lib64' / 'stubs'}")
@@ -108,6 +116,10 @@ def load_ext(
         sources=sources,
         extra_cflags=["-O3"],
         extra_cuda_cflags=cuda_cflags,
+        # cuBLASDx headers, resolved only when a selected source needs them so the
+        # other algorithms build without cuBLASDx. Must go here rather than
+        # as -I in extra_cuda_cflags: see mathdx_paths.cublasdx_include_dirs.
+        extra_include_paths=cublasdx_include_dirs() if compile_d2t else [],
         extra_ldflags=extra_ldflags,
         verbose=verbose,
     )
