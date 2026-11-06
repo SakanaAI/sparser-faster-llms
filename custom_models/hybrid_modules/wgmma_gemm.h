@@ -41,7 +41,7 @@ void populate_overflow_tail_from_packed(
     int ell_w, int tail_cap, int discard);
 
 // Fused gate GEMM (X @ G^T) -> hybrid sparse via a packed blocked-ELL workspace.
-// Returns false on non-Hopper builds or unaligned shapes; the caller should then
+// Returns false on builds without D2T, on GPUs other than the D2T target SM, or unaligned shapes; the caller should then
 // take the einsum + create_hybrid_sparse_from_dense fallback.
 bool wgmma_gate_gemm_to_ell_packed(
     const at::Tensor& X_flat,

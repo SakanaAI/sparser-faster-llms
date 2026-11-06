@@ -13,7 +13,9 @@ This repository contains the reference code for the paper **Sparser, Faster, Lig
 
 ## Installation
 
-The repository expects a CUDA 12.8+ environment:
+The repository expects a CUDA 13.0+ environment. The TwELL D2T kernels also
+need a [MathDx](https://developer.nvidia.com/mathdx) 26.10+ package; set
+`MATHDX_HOME` to its root (see `custom_models/twell_modules/README.md`):
 
 ```bash
 git clone https://github.com/SakanaAI/sparser-faster-llms.git

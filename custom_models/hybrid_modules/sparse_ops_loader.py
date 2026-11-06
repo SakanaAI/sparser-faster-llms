@@ -1,20 +1,26 @@
 import os
-import re
+import sys
 from pathlib import Path
 
 import torch
 from torch.utils.cpp_extension import CUDA_HOME, load
 
-# Env vars (all prefixed with SPARSE_):
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from mathdx_paths import cublasdx_include_dirs, d2t_target_sm, default_arch_list  # noqa: E402
+
+# Environment variables:
 #   SPARSE_OPS_PREBUILT          - full path to a prebuilt sparse_ops.so. When set,
 #                                  JIT compilation is skipped and the .so is loaded
 #                                  directly. Use this on machines without nvcc.
 #   SPARSE_ENABLE_PERF_PROFILING - "1" to enable perf instrumentation in the JIT
 #                                  build. Read on each call so distinct values
 #                                  produce distinct cached builds.
-# TORCH_CUDA_ARCH_LIST is honored as-is (set by torch / user) and drives nvcc.
+#   MATHDX_HOME                  - MathDx package root (26.10+) providing cuBLASDx.
+#                                  See ../twell_modules/README.md.
+# TORCH_CUDA_ARCH_LIST drives nvcc (default: the current GPU, e.g. 10.0a). D2T is
+# built for a single architecture-specific target such as 9.0a, 10.0a or 10.7a.
 
-os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "9.0a")
+os.environ.setdefault("TORCH_CUDA_ARCH_LIST", default_arch_list())
 
 _BASE_DIR = Path(__file__).resolve().parent
 _EXT_NAME = "sparse_ops"
@@ -24,7 +30,7 @@ _BASE_SOURCES = [
     str(_BASE_DIR / "hybrid_sp.cu"),
     str(_BASE_DIR / "wgmma_gemm.cu"),
 ]
-_HOPPER_SOURCES = [
+_D2T_SOURCES = [
     str(_BASE_DIR.parent / "twell_modules" / "matmul_d2t.cu"),
 ]
 
@@ -35,16 +41,6 @@ def _profiling_flag() -> str:
     val = os.environ.get("SPARSE_ENABLE_PERF_PROFILING", "0")
     enabled = val not in ("0", "", "false", "False")
     return f"-DENABLE_PERF_PROFILING={1 if enabled else 0}"
-
-
-def _has_hopper_target() -> bool:
-    """Returns True if TORCH_CUDA_ARCH_LIST targets sm_90 or newer."""
-    arch_list = os.environ.get("TORCH_CUDA_ARCH_LIST", "")
-    for tok in re.split(r"[\s;,]+", arch_list.strip()):
-        m = re.match(r"(\d+)\.(\d+)", tok)
-        if m and (int(m.group(1)), int(m.group(2))) >= (9, 0):
-            return True
-    return False
 
 
 def load_sparse_ops(verbose: bool = False):
@@ -71,11 +67,15 @@ def load_sparse_ops(verbose: bool = False):
     ]
     cflags = ["-O3", profiling_flag]
 
-    # matmul_d2t.cu (twell_modules) uses Hopper-only PTX and only compiles for sm_90a+.
-    # Drop it for non-Hopper builds; wgmma_gemm.cu self-gates via __CUDA_ARCH_LIST__.
+    # matmul_d2t.cu compiles for one architecture-specific SM; tell the hybrid
+    # wrapper whether its D2T symbol is linked and which SM it runs on.
+    d2t_sm = d2t_target_sm(os.environ.get("TORCH_CUDA_ARCH_LIST", ""))
+    compile_d2t = d2t_sm is not None
+    cuda_cflags.append(f"-DSPARSE_OPS_HAS_D2T={int(compile_d2t)}")
     sources = list(_BASE_SOURCES)
-    if _has_hopper_target():
-        sources += _HOPPER_SOURCES
+    if compile_d2t:
+        cuda_cflags.append(f"-DTWELL_D2T_SM={d2t_sm}")
+        sources += _D2T_SOURCES
 
     extra_ldflags = []
     if CUDA_HOME is not None:
@@ -87,6 +87,8 @@ def load_sparse_ops(verbose: bool = False):
         sources=sources,
         extra_cflags=cflags,
         extra_cuda_cflags=cuda_cflags,
+        # Resolve cuBLASDx only when compiling the D2T source.
+        extra_include_paths=cublasdx_include_dirs() if compile_d2t else [],
         extra_ldflags=extra_ldflags,
         verbose=verbose,
         is_python_module=False,

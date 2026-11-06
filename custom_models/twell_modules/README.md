@@ -1,6 +1,30 @@
 # TwELL Kernels
 
-TwELL provides Hopper-optimized sparse feed-forward kernels for LLM MLP blocks.
+TwELL provides sparse feed-forward kernels for LLM MLP blocks on Hopper and newer
+GPUs (e.g. H100 `sm_90a`, B200 `sm_100a`, Rubin `sm_107a`).
+
+`matmul_d2t.cu` builds against cuBLASDx from a released MathDx package
+(26.10 or newer). Point `MATHDX_HOME` at the versioned package root:
+
+```bash
+export MATHDX_HOME=/path/to/nvidia-mathdx-26.10.0-cuda13/nvidia/mathdx/26.10
+```
+
+The build uses `$MATHDX_HOME/include` and the CUTLASS headers bundled under
+`$MATHDX_HOME/external/cutlass/include`.
+
+D2T is compiled for exactly one architecture-specific target, taken from
+`TORCH_CUDA_ARCH_LIST` (e.g. `9.0a`, `10.0a` or `10.7a`; default: the current
+GPU). The build passes the matching `-gencode` and `-DTWELL_D2T_SM` (900, 1000,
+1070, ...) to `matmul_d2t.cu`, which selects the cuBLASDx `SM<>` target and the
+compute block size (256 threads on Hopper, 128 on Blackwell and newer). The
+resulting binary runs only on GPUs of that exact compute capability; mixed
+architecture lists are unsupported. The shipped 2x1 cluster requires
+`M % 256 == 0`, `N % 256 == 0`, and `K % 64 == 0`, with positive dimensions,
+`N <= 65536`, and enough K stages for the library-selected pipeline depth.
+
+The persistent grid is selected with CUDA's cluster-occupancy query during layer
+preparation. Prepare layers and their shapes before graph capture.
 
 ## Main Python APIs
 
@@ -52,4 +76,3 @@ full fp32 path for the fused gated up/down projection; the default
 
 `TwELLMLP` and `TwELLGatedMLP` also support `inplace=True` to overwrite the input
 activation and reduce memory traffic. 
-
